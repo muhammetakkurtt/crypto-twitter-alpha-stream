@@ -1,0 +1,51 @@
+{
+  "apify": {
+    "actorUrl": "https://muhammetakkurtt--crypto-twitter-tracker.apify.actor",
+    "endpoint": "all"
+  },
+  "filters": {
+    "users": [],
+    "keywords": []
+  },
+  "outputs": {
+    "cli": {
+      "enabled": true,
+      "statsInterval": 60000
+    },
+    "dashboard": {
+      "enabled": true,
+      "port": 3000
+    },
+    "alerts": {
+      "telegram": {
+        "enabled": false
+      },
+      "discord": {
+        "enabled": false
+      },
+      "webhook": {
+        "enabled": false
+      },
+      "rateLimit": 10
+    }
+  },
+  "dedup": {
+    "ttl": 60
+  },
+  "reconnect": {
+    "initialDelay": 1000,
+    "maxDelay": 30000,
+    "backoffMultiplier": 2.0,
+    "maxAttempts": 10
+  },
+  "logging": {
+    "fileLogging": false,
+    "debug": false
+  },
+  "health": {
+    "port": 3001
+  },
+  "activeUsers": {
+    "refreshInterval": 240000
+  }
+}

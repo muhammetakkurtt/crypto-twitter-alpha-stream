@@ -1,0 +1,72 @@
+services:
+  crypto-twitter-alpha-stream:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: crypto-twitter-alpha-stream
+    restart: unless-stopped
+    
+    # Environment variables (override with .env file)
+    environment:
+      - APIFY_TOKEN=${APIFY_TOKEN}
+      - APIFY_ACTOR_URL=${APIFY_ACTOR_URL:-https://muhammetakkurtt--crypto-twitter-tracker.apify.actor}
+      - ENDPOINT=${ENDPOINT:-all}
+      - USERS=${USERS:-}
+      - KEYWORDS=${KEYWORDS:-}
+      - DASHBOARD_ENABLED=${DASHBOARD_ENABLED:-true}
+      - DASHBOARD_PORT=${DASHBOARD_PORT:-3000}
+      - CLI_ENABLED=${CLI_ENABLED:-true}
+      - CLI_STATS_INTERVAL=${CLI_STATS_INTERVAL:-60000}
+      - TELEGRAM_ENABLED=${TELEGRAM_ENABLED:-false}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
+      - DISCORD_ENABLED=${DISCORD_ENABLED:-false}
+      - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-}
+      - WEBHOOK_ENABLED=${WEBHOOK_ENABLED:-false}
+      - WEBHOOK_URL=${WEBHOOK_URL:-}
+      - HEALTH_PORT=${HEALTH_PORT:-3001}
+      - DEDUP_TTL=${DEDUP_TTL:-60}
+      - RECONNECT_INITIAL_DELAY=${RECONNECT_INITIAL_DELAY:-1000}
+      - RECONNECT_MAX_DELAY=${RECONNECT_MAX_DELAY:-30000}
+      - RECONNECT_BACKOFF_MULTIPLIER=${RECONNECT_BACKOFF_MULTIPLIER:-2.0}
+      - RECONNECT_MAX_ATTEMPTS=${RECONNECT_MAX_ATTEMPTS:-0}
+      - ACTIVE_USERS_REFRESH_INTERVAL=${ACTIVE_USERS_REFRESH_INTERVAL:-240000}
+      - ALERT_RATE_LIMIT=${ALERT_RATE_LIMIT:-10}
+      - DEBUG=${DEBUG:-false}
+      - FILE_LOGGING=${FILE_LOGGING:-false}
+      - NODE_ENV=production
+    
+    # Port mappings
+    ports:
+      - "${DASHBOARD_PORT:-3000}:3000"
+      - "${HEALTH_PORT:-3001}:3001"
+    
+    # Volume mounts for configuration
+    volumes:
+      - ./config:/app/config:ro
+      - ./logs:/app/logs
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3001/status', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"]
+      interval: 30s
+      timeout: 10s
+      start_period: 40s
+      retries: 3
+    
+    # Resource limits (optional, adjust as needed)
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+    
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
