@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![Dashboard Demo](https://s12.gifyu.com/images/bkAn5.gif)
+![Dashboard Demo](https://github.com/muhammetakkurtt/crypto-twitter-alpha-stream/releases/download/v1.0.0/dashboard-demo.gif)
 
 </div>
 
@@ -970,4 +970,5 @@ crypto-twitter-alpha-stream/
 └── package.json             # Project metadata and scripts
 
 ```
+
 
