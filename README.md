@@ -6,22 +6,24 @@
 
 </div>
 
-Real-time Twitter event streaming application that consumes Server-Sent Events (SSE) from an [Apify actor](https://apify.com/muhammetakkurtt/crypto-twitter-tracker?fpr=muh) and distributes filtered, deduplicated Twitter events to multiple output channels. Monitor curated crypto Twitter accounts with live CLI streams, interactive web dashboards, and instant alerts.
+Real-time Twitter event streaming application that connects via WebSocket to an [Apify actor](https://apify.com/muhammetakkurtt/crypto-twitter-tracker?fpr=muh) and distributes filtered, deduplicated Twitter events to multiple output channels. Monitor curated crypto Twitter accounts with live CLI streams, interactive web dashboards, and instant alerts.
 
 ## Features
 
-- **🔴 Real-time SSE streaming** from Apify actor endpoints with automatic reconnection
+- **🔴 Real-time WebSocket streaming** from Apify actor with automatic reconnection and exponential backoff
 - **📺 Multiple output channels**: CLI live stream, Web Dashboard, and Alerts (Telegram/Discord/Webhook)
-- **🔍 Smart filtering** by users, keywords, and event types
-- **🚫 Deduplication** to prevent redundant notifications
+- **🔍 Smart filtering** by users, keywords, and event types (both actor-side and client-side)
+- **🚫 Intelligent deduplication** using stable identifiers to prevent redundant notifications
 - **🔄 Automatic reconnection** with exponential backoff for resilience
 - **🎨 Interactive web dashboard** for visual monitoring and real-time filtering
 - **📊 Health monitoring** via HTTP status endpoint
 - **⚡ Fast setup** - Get streaming in 5-10 minutes
+- **🔌 WebSocket protocol** with subscribe-based channel selection
 
 ## Table of Contents
 
 - [Quick Start](#quick-start)
+- [WebSocket Protocol](#websocket-protocol)
 - [Cost Optimization](#cost-optimization)
 - [Configuration](#configuration)
 - [Usage Examples](#usage-examples)
@@ -86,6 +88,357 @@ docker-compose up
 ```
 
 Access the dashboard at `http://localhost:3000`
+
+## WebSocket Protocol
+
+The application uses WebSocket (WSS) to connect to the Apify actor for real-time event streaming. Understanding the protocol helps with troubleshooting and advanced configuration.
+
+### Connection Flow
+
+1. **WebSocket Connection**: Client establishes WSS connection to `wss://muhammetakkurtt--crypto-twitter-tracker.apify.actor/`
+2. **Authentication**: Token is passed as a query parameter: `?token=YOUR_TOKEN`
+3. **Connected Event**: Server sends a "connected" event confirming the connection
+4. **Subscribe Message**: Client sends a subscribe message specifying channels and optional user filters
+5. **Subscribed Event**: Server confirms subscription with channel and filter details
+6. **Event Streaming**: Server streams Twitter events in real-time
+7. **Heartbeat**: Server sends WebSocket protocol-level ping frames every 15 seconds (handled automatically)
+
+### Subscribe Message Format
+
+After connecting, the client sends a subscribe message to specify which channels to monitor:
+
+```json
+{
+  "op": "subscribe",
+  "channels": ["all"],
+  "users": ["elonmusk", "vitalikbuterin"]
+}
+```
+
+**Fields**:
+- `op`: Always "subscribe"
+- `channels`: Array of channel names (see below)
+- `users`: Optional array of usernames for actor-side filtering (omitted if no filters)
+
+**Available Channels**:
+- `all`: All event types (tweets, follows, profile updates)
+- `tweets`: Only tweet events (post_created)
+- `following`: Only follow events (follow_created)
+- `profile`: Only profile update events (user_updated)
+
+**Multiple Channels**: You can subscribe to multiple channels simultaneously:
+```json
+{
+  "op": "subscribe",
+  "channels": ["tweets", "following"]
+}
+```
+
+**User Filtering**: Include the `users` array for actor-side filtering to reduce events and costs:
+```json
+{
+  "op": "subscribe",
+  "channels": ["all"],
+  "users": ["elonmusk", "vitalikbuterin", "cz_binance"]
+}
+```
+
+When you configure user filters in your `.env` file (via the `USERS` environment variable), the application automatically includes them in the subscribe message. The actor then filters events server-side, sending only events from your specified users. This reduces both the number of events delivered to your client and your usage costs.
+
+### Event Format
+
+Events are sent as JSON messages with this structure:
+
+```json
+{
+  "event_type": "post_created",
+  "data": {
+    "username": "elonmusk",
+    "action": "post_created",
+    "tweetId": "123456789",
+    "tweet": {
+      "id": "123456789",
+      "type": "tweet",
+      "created_at": "2024-01-15T14:30:22.000Z",
+      "body": {
+        "text": "Bitcoin is the future...",
+        "urls": [],
+        "mentions": []
+      },
+      "author": {
+        "handle": "elonmusk",
+        "id": "44196397",
+        "verified": true,
+        "profile": {
+          "name": "Elon Musk",
+          "avatar": "https://...",
+          "bio": "..."
+        }
+      },
+      "metrics": {
+        "likes": 1000,
+        "retweets": 500,
+        "replies": 200,
+        "views": 50000
+      }
+    }
+  }
+}
+```
+
+**Event Types**:
+- `connected`: Connection established
+- `subscribed`: Subscription confirmed
+- `post_created`: New tweet posted
+- `follow_created`: User followed another user
+- `user_updated`: User profile updated
+- `shutdown`: Server shutting down (client will reconnect after 5 seconds)
+- `error`: Error occurred (includes error code and message)
+
+### Event Transformation
+
+The application transforms actor events to a standardized internal format:
+
+**Actor Format** (received from WebSocket):
+```json
+{
+  "event_type": "post_created",
+  "data": { /* nested tweet/user data */ }
+}
+```
+
+**Internal Format** (used by application):
+```json
+{
+  "type": "post_created",
+  "timestamp": "2024-01-15T14:30:22.000Z",
+  "primaryId": "123456789",
+  "user": {
+    "username": "elonmusk",
+    "displayName": "Elon Musk",
+    "userId": "44196397"
+  },
+  "data": { /* complete actor data preserved */ }
+}
+```
+
+**Transformation Rules**:
+- `username`: Extracted with priority: `data.username` → `data.user.handle` → `data.tweet.author.handle`
+- `userId`: Extracted from `data.user.id` or `data.tweet.author.id`
+- `displayName`: Extracted from `data.user.profile.name` or `data.tweet.author.profile.name`
+- `primaryId`: Generated based on event type (tweetId for tweets, userId for follows/updates)
+- `data`: Complete deep copy of actor data field
+
+### Deduplication Mechanism
+
+The application uses an intelligent deduplication system to prevent duplicate events from being processed multiple times. This is critical for avoiding redundant notifications and ensuring data consistency.
+
+**Deduplication Key Structure**:
+
+The deduplication key is composed of three parts:
+```
+{eventType}:{primaryId}:{contentHash}
+```
+
+**Components**:
+
+1. **Event Type**: The normalized event type (e.g., `post_created`, `follow_updated`)
+2. **Primary ID**: A stable identifier extracted from the event data
+3. **Content Hash**: A hash of the event data to detect content changes
+
+**Stable Identifier Extraction**:
+
+The application uses stable identifiers instead of timestamps for the `primaryId` field:
+
+- **Tweet Events** (`post_created`, `post_updated`):
+  - Uses `tweetId` or `tweet.id` from the event data
+  - Example: `"123456789"`
+  - Ensures the same tweet always has the same ID
+
+- **Follow Events** (`follow_created`, `follow_updated`):
+  - Combines follower and followed user IDs: `{userId}-{followingId}`
+  - Example: `"44196397-123456"`
+  - Ensures the same follow relationship always has the same ID
+
+- **Profile Events** (`user_updated`, `profile_updated`, `profile_pinned`):
+  - Uses the user's ID from `user.id`
+  - Example: `"44196397"`
+  - Ensures the same user's updates have the same base ID
+
+- **Fallback**: Only when no stable ID is available, uses `{username}-{timestamp}`
+
+**Why Stable IDs Matter**:
+
+Using stable identifiers instead of timestamps ensures:
+- The same event received multiple times is correctly identified as a duplicate
+- Events with different timestamps but identical content are deduplicated
+- Deduplication works reliably across reconnections and restarts
+
+**Content Hash**:
+
+The content hash detects when the same entity has different content:
+- Same tweet ID with different text → Different hash → Processed as update
+- Same follow relationship → Same hash → Deduplicated
+- Profile update with changed bio → Different hash → Processed as new event
+
+**Example - Tweet Deduplication**:
+
+Event 1 (received at 10:00):
+```json
+{
+  "type": "post_created",
+  "primaryId": "123456789",
+  "data": { "tweet": { "body": { "text": "Hello world" } } }
+}
+```
+Dedup key: `post_created:123456789:abc123`
+
+Event 2 (same tweet received at 10:05):
+```json
+{
+  "type": "post_created",
+  "primaryId": "123456789",
+  "data": { "tweet": { "body": { "text": "Hello world" } } }
+}
+```
+Dedup key: `post_created:123456789:abc123` ← **Same key, deduplicated**
+
+Event 3 (tweet updated at 10:10):
+```json
+{
+  "type": "post_updated",
+  "primaryId": "123456789",
+  "data": { "tweet": { "body": { "text": "Hello world updated" } } }
+}
+```
+Dedup key: `post_updated:123456789:def456` ← **Different type and hash, processed**
+
+**Cache Behavior**:
+
+- **TTL (Time-To-Live)**: Dedup keys expire after 60 seconds by default (configurable via `DEDUP_TTL`)
+- **Memory Efficient**: Old entries are automatically removed after TTL expires
+- **Automatic Cleanup**: No manual cache management required
+
+**Configuration**:
+
+```env
+DEDUP_TTL=60  # Dedup cache TTL in seconds (default: 60)
+```
+
+**Benefits**:
+
+✅ Prevents duplicate notifications to users
+✅ Reduces unnecessary processing overhead
+✅ Works reliably across reconnections
+✅ Detects content changes for update events
+✅ Memory efficient with automatic expiration
+
+**Implementation Location**: The deduplication logic is implemented in `DedupCache.ts` and `generateDedupKey()` function.
+
+### Control Events
+
+**Connected Event**:
+```json
+{
+  "event_type": "connected",
+  "data": {
+    "connection_id": "ws_1234567890_abc123",
+    "channels": [],
+    "filter": {"enabled": false}
+  }
+}
+```
+
+**Subscribed Event**:
+```json
+{
+  "event_type": "subscribed",
+  "data": {
+    "channels": ["all"],
+    "filter": {
+      "enabled": true,
+      "users_count": 2,
+      "sample_users": ["elonmusk", "vitalikbuterin"]
+    }
+  }
+}
+```
+
+**Shutdown Event**:
+```json
+{
+  "event_type": "shutdown",
+  "data": {
+    "message": "Server shutting down"
+  }
+}
+```
+
+When a shutdown event is received, the client waits 5 seconds and then automatically reconnects.
+
+**Error Event**:
+```json
+{
+  "event_type": "error",
+  "data": {
+    "code": "INVALID_SUBSCRIPTION",
+    "message": "channels must be an array"
+  }
+}
+```
+
+### Heartbeat and Connection Health
+
+The WebSocket connection uses protocol-level ping/pong frames for health monitoring:
+
+- **Server Ping**: Server sends WebSocket ping frames every 15 seconds
+- **Client Pong**: The `ws` library automatically responds with pong frames
+- **No Application Logic**: Heartbeat is handled entirely by the WebSocket protocol, not by application code
+- **Connection Detection**: If pings fail, the connection is considered dead and reconnection is triggered
+
+### Reconnection Behavior
+
+The client implements automatic reconnection with exponential backoff:
+
+**Exponential Backoff Formula**:
+```
+delay = min(initialDelay × multiplier^attempts, maxDelay)
+```
+
+**Default Configuration**:
+- Initial delay: 1000ms (1 second)
+- Max delay: 30000ms (30 seconds)
+- Backoff multiplier: 2.0
+- Max attempts: 0 (infinite)
+
+**Reconnection Sequence**:
+1. Connection closes unexpectedly
+2. Calculate delay using exponential backoff
+3. Wait for calculated delay
+4. Attempt reconnection
+5. On success: Reset attempt counter, re-subscribe to channels
+6. On failure: Increment attempt counter, repeat from step 2
+
+**Special Cases**:
+- **Authentication Failure (401)**: No reconnection attempted
+- **Server Shutdown**: Wait 5 seconds, then reconnect (no exponential backoff)
+- **Max Attempts Reached**: Stop reconnection and emit fatal error (if maxAttempts > 0)
+
+### WebSocket URL Formats
+
+The application accepts flexible URL formats and automatically converts them:
+
+**Accepted Formats**:
+- `http://host` → Converted to `ws://host` for WebSocket
+- `https://host` → Converted to `wss://host` for WebSocket
+- `ws://host` → Used as-is for WebSocket
+- `wss://host` → Used as-is for WebSocket
+
+**REST Endpoints**: For HTTP endpoints like `/active-users` and `/health`, the URL is converted back:
+- `ws://host` → `http://host`
+- `wss://host` → `https://host`
+
+This allows you to configure the base URL in any format, and the application handles the conversion automatically.
 
 ## Cost Optimization
 
@@ -170,8 +523,27 @@ npm start
 The application will:
 1. Validate your configured usernames against the active users list
 2. Warn you if any usernames are invalid (not in the monitored list)
-3. Connect to the actor with the `?users=` parameter
-4. Receive only events from your specified users
+3. Connect to the actor and send a subscribe message with the users field
+4. Receive only events from your specified users (filtered server-side)
+
+**How User Filtering Works**:
+
+When you configure user filters, the application includes them in the WebSocket subscribe message:
+
+```json
+{
+  "op": "subscribe",
+  "channels": ["all"],
+  "users": ["elonmusk", "vitalikbuterin", "cz_binance"]
+}
+```
+
+The actor receives this subscribe message and applies the user filter server-side. Only events from the specified users are sent to your client over the WebSocket connection. This means:
+
+- **Reduced Events**: You only receive events from your specified users
+- **Lower Costs**: You're only charged for events actually delivered to your client
+- **Server-Side Filtering**: Filtering happens at the source, not in your client
+- **Efficient**: No bandwidth wasted on events you don't want
 
 ### Important Notes About User Filtering
 
@@ -240,10 +612,12 @@ APIFY_ACTOR_URL=https://muhammetakkurtt--crypto-twitter-tracker.apify.actor
 
 ```env
 # Apify actor URL (already set to the deployed actor)
+# Supports http/https/ws/wss formats - automatically converted
 APIFY_ACTOR_URL=https://muhammetakkurtt--crypto-twitter-tracker.apify.actor
 
-# Select endpoint (all, tweets, following, profile)
-ENDPOINT=all
+# Select channels (comma-separated: all, tweets, following, profile)
+# Can specify multiple channels to subscribe to multiple event types
+CHANNELS=all
 
 # Filter by specific users (comma-separated)
 USERS=elonmusk,vitalikbuterin,cz_binance
@@ -317,7 +691,7 @@ Open `http://localhost:3000` in your browser to:
 - View live event feed with auto-scroll
 - Filter events by keywords and event types
 - Search active users
-- Switch between endpoints
+- Switch between channels
 - Monitor connection status and statistics
 
 ### Example 3: Telegram Alerts
@@ -362,7 +736,7 @@ Bitcoin is the future of money and will replace all fiat currencies...
 Monitor only specific accounts for certain keywords:
 
 ```env
-ENDPOINT=tweets
+CHANNELS=tweets
 USERS=elonmusk,vitalikbuterin,cz_binance
 KEYWORDS=bitcoin,ethereum,btc,eth
 ```
@@ -413,6 +787,33 @@ Events will be broadcast to all enabled channels independently.
 
 ## API Endpoints
 
+### WebSocket Endpoint
+
+**WebSocket** connection for real-time event streaming from the Apify actor.
+
+**URL**: `wss://muhammetakkurtt--crypto-twitter-tracker.apify.actor/`
+
+**Authentication**: Token passed as query parameter: `?token=YOUR_TOKEN`
+
+**Protocol**:
+1. Client connects to WebSocket endpoint with token
+2. Server sends "connected" event
+3. Client sends subscribe message with channels and optional user filters
+4. Server sends "subscribed" confirmation
+5. Server streams events in real-time
+6. Server sends protocol-level ping frames every 15 seconds (handled automatically)
+
+**Subscribe Message**:
+```json
+{
+  "op": "subscribe",
+  "channels": ["all"],
+  "users": ["elonmusk", "vitalikbuterin"]
+}
+```
+
+See [WebSocket Protocol](#websocket-protocol) section for detailed protocol documentation.
+
 ### Health Status Endpoint
 
 **GET** `/status`
@@ -426,7 +827,7 @@ Returns application health and statistics.
 {
   "connection": {
     "status": "connected",
-    "endpoint": "/events/twitter/all",
+    "channels": ["all"],
     "uptime": 3600
   },
   "events": {
@@ -550,13 +951,33 @@ ALERT_RATE_LIMIT=30
 
 ### Connection Issues
 
-**Problem**: "Failed to connect to SSE endpoint"
+**Problem**: "Failed to connect to WebSocket endpoint"
 
 **Solutions**:
 - Verify your `APIFY_TOKEN` is correct
 - Check your internet connection
 - Ensure the Apify actor is running at https://muhammetakkurtt--crypto-twitter-tracker.apify.actor
 - Check the actor's health endpoint: `curl -H "Authorization: Bearer YOUR_TOKEN" https://muhammetakkurtt--crypto-twitter-tracker.apify.actor/health`
+- Verify your firewall allows WebSocket connections (port 443 for wss://)
+- Check if you're behind a proxy that blocks WebSocket connections
+
+**Problem**: "WebSocket connection closed unexpectedly"
+
+**Solutions**:
+- Check application logs for close code and reason
+- Normal closure (code 1000): Expected shutdown, client will reconnect
+- Abnormal closure (code 1006): Network issue, client will reconnect with exponential backoff
+- Authentication failure (code 1008): Verify your token is correct
+- Enable debug mode to see detailed connection logs: `DEBUG=true npm start`
+
+**Problem**: "Subscription timeout - no subscribed event received"
+
+**Solutions**:
+- Verify your channels configuration is valid (all, tweets, following, profile)
+- Check that channels is an array in the subscribe message
+- Ensure the subscribe message is sent within 30 seconds of connection
+- Review application logs for subscription errors
+- Try with a single channel first: `CHANNELS=all`
 
 **Problem**: "Authentication failed"
 
@@ -567,7 +988,7 @@ ALERT_RATE_LIMIT=30
 
 ### No Events Appearing
 
-**Problem**: Application runs but no events show up
+**Problem**: No events appearing
 
 **Solutions**:
 - Check if filters are too restrictive (try removing `USERS` and `KEYWORDS`)
@@ -577,9 +998,11 @@ ALERT_RATE_LIMIT=30
        https://muhammetakkurtt--crypto-twitter-tracker.apify.actor/active-users
   ```
 - Check validation warnings on startup for invalid usernames
-- Verify the selected endpoint has active events
+- Verify the selected channels have active events
 - Check if tracked accounts are actually posting
 - Review the active users list: `curl http://localhost:3001/status`
+- Verify subscription was successful (check logs for "subscribed" event)
+- Enable debug mode to see raw events: `DEBUG=true npm start`
 
 **Problem**: Configured user filters but receiving no events
 
@@ -589,6 +1012,57 @@ ALERT_RATE_LIMIT=30
 - Ensure usernames don't include the @ symbol
 - Try with a well-known account like `elonmusk` to test
 - Check that the actor is actually monitoring those accounts
+
+### WebSocket-Specific Issues
+
+**Problem**: "Reconnection loop - constantly reconnecting"
+
+**Solutions**:
+- Check if your token is valid (401 errors prevent reconnection)
+- Verify the actor is running and accepting connections
+- Check if you're hitting rate limits
+- Review reconnection configuration (may be too aggressive):
+  ```env
+  RECONNECT_INITIAL_DELAY=1000
+  RECONNECT_MAX_DELAY=30000
+  RECONNECT_BACKOFF_MULTIPLIER=2.0
+  ```
+- Enable debug mode to see reconnection attempts: `DEBUG=true npm start`
+
+**Problem**: "Events are delayed or arriving in bursts"
+
+**Solutions**:
+- Check network latency to the actor
+- Verify WebSocket connection is stable (check for reconnections in logs)
+- Check if the actor is under heavy load
+- Monitor bufferedAmount in WebSocket connection (visible in debug mode)
+- Ensure your system has sufficient resources (CPU, memory)
+
+**Problem**: "Heartbeat timeout - connection considered dead"
+
+**Solutions**:
+- WebSocket ping/pong is handled automatically by the protocol
+- If heartbeat fails, it indicates network issues
+- Check your network stability and firewall settings
+- Verify WebSocket connections aren't being terminated by a proxy
+- The client will automatically reconnect with exponential backoff
+
+**Problem**: "Server shutdown event received"
+
+**Solutions**:
+- This is normal - the actor is restarting or deploying
+- The client automatically waits 5 seconds and reconnects
+- No action needed - this is handled gracefully
+- After reconnection, the client re-subscribes to your channels
+
+**Problem**: "Invalid subscribe message error"
+
+**Solutions**:
+- Verify `CHANNELS` is set correctly (comma-separated: all,tweets,following,profile)
+- Ensure channels are valid values (all, tweets, following, profile)
+- Check that the subscribe message is properly formatted JSON
+- Review application logs for the exact error message
+- Try with a single channel first: `CHANNELS=all`
 
 ### Dashboard Not Loading
 
@@ -666,12 +1140,12 @@ DEBUG=true
 
 Debug mode provides detailed visibility into the event processing pipeline:
 
-1. **Raw Actor Events** (SSEClient):
-   - Complete event structure as received from the actor
+1. **Raw Actor Events** (WSSClient):
+   - Complete event structure as received from the WebSocket
    - Logged before any transformation occurs
    - Helps verify what data is actually being sent
 
-2. **Transformed Events** (SSEClient):
+2. **Transformed Events** (WSSClient):
    - Event structure after transformation to internal format
    - Shows extracted username, displayName, userId, primaryId
    - Verifies data preservation during transformation
@@ -691,10 +1165,20 @@ Debug mode provides detailed visibility into the event processing pipeline:
    - Stack traces for debugging
    - Problematic data that caused the error
 
+6. **WebSocket Connection Events**:
+   - Connection state changes
+   - Subscribe message sent
+   - Subscribed confirmation received
+   - Reconnection attempts and delays
+   - Shutdown events and reconnection timing
+
 **Example Debug Output**:
 
 ```
-[SSEClient] Raw actor event: {
+[WSSClient] WebSocket connected
+[WSSClient] Sending subscribe message: {"op":"subscribe","channels":["all"],"users":["elonmusk"]}
+[WSSClient] Subscribed successfully: {"channels":["all"],"filter":{"enabled":true,"users_count":1}}
+[WSSClient] Raw actor event: {
   "data": {
     "username": "elonmusk",
     "action": "post_created",
@@ -707,7 +1191,7 @@ Debug mode provides detailed visibility into the event processing pipeline:
   "event_type": "post_created"
 }
 
-[SSEClient] Transformed event: {
+[WSSClient] Transformed event: {
   "type": "post_created",
   "timestamp": "2024-01-15T14:30:22.000Z",
   "primaryId": "123456789",
@@ -858,7 +1342,7 @@ npm test:watch
 npm run test:coverage
 
 # Run specific test file
-npm test -- SSEClient.test.ts
+npm test -- WSSClient.test.ts
 ```
 
 The test suite includes:
@@ -876,8 +1360,8 @@ crypto-twitter-alpha-stream/
 │   ├── config/               # Configuration management
 │   │   ├── ConfigManager.ts  # Config loader with priority resolution
 │   │   └── types.ts          # Configuration type definitions
-│   ├── sse/                  # SSE client with reconnection
-│   │   └── SSEClient.ts      # EventSource wrapper with exponential backoff
+│   ├── ws/                   # WebSocket client with reconnection
+│   │   └── WSSClient.ts      # WebSocket wrapper with exponential backoff
 │   ├── filters/              # Event filtering pipeline
 │   │   ├── FilterPipeline.ts # Filter chain orchestrator
 │   │   └── EventFilter.ts    # User and keyword filters
@@ -935,7 +1419,7 @@ crypto-twitter-alpha-stream/
 │   ├── index.ts             # Application entry point
 │   ├── Application.ts       # Main orchestrator
 │   ├── config/              # Configuration management
-│   ├── sse/                 # SSE client with reconnection
+│   ├── ws/                  # WebSocket client with reconnection
 │   ├── filters/             # Event filtering pipeline
 │   ├── streamcore/          # Core event processing
 │   ├── outputs/             # Output channels (CLI, Dashboard, Alerts)

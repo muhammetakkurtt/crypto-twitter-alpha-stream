@@ -1,13 +1,19 @@
 # API Documentation
 
-This document describes all HTTP endpoints and WebSocket events exposed by the Crypto Twitter Alpha Stream application.
+This document describes all HTTP endpoints and WebSocket events exposed by the Crypto Twitter Alpha Stream application, as well as the WebSocket protocol used to connect to the Apify actor.
 
 ## Table of Contents
 
-- [HTTP Endpoints](#http-endpoints)
+- [Apify Actor WebSocket API](#apify-actor-websocket-api)
+  - [WebSocket Connection](#websocket-connection)
+  - [Subscribe Protocol](#subscribe-protocol)
+  - [Event Streaming](#event-streaming)
+  - [Control Events](#control-events)
+  - [Error Handling](#error-handling)
+- [Application HTTP Endpoints](#application-http-endpoints)
   - [Health Status Endpoint](#health-status-endpoint)
   - [Active Users Endpoint](#active-users-endpoint)
-- [WebSocket API](#websocket-api)
+- [Dashboard WebSocket API](#dashboard-websocket-api)
   - [Connection](#connection)
   - [Events](#events)
   - [Client-to-Server Messages](#client-to-server-messages)
@@ -16,7 +22,329 @@ This document describes all HTTP endpoints and WebSocket events exposed by the C
 
 ---
 
-## HTTP Endpoints
+## Apify Actor WebSocket API
+
+The application connects to the Apify actor via WebSocket for real-time event streaming. This section documents the WebSocket protocol used for actor communication.
+
+### WebSocket Connection
+
+**Endpoint**: `wss://muhammetakkurtt--crypto-twitter-tracker.apify.actor/`
+
+**Protocol**: WebSocket (WSS)
+
+**Authentication**: Token passed as query parameter
+
+**Connection URL Format**:
+```
+wss://muhammetakkurtt--crypto-twitter-tracker.apify.actor/?token=YOUR_APIFY_TOKEN
+```
+
+**Connection Flow**:
+1. Client establishes WebSocket connection with token in query string
+2. Server sends "connected" event confirming connection
+3. Client sends subscribe message specifying channels and optional user filters
+4. Server sends "subscribed" event confirming subscription
+5. Server streams events in real-time
+6. Server sends WebSocket protocol-level ping frames every 15 seconds (handled automatically by ws library)
+
+**Example Connection** (Node.js with ws library):
+```javascript
+const WebSocket = require('ws');
+
+const ws = new WebSocket('wss://muhammetakkurtt--crypto-twitter-tracker.apify.actor/?token=YOUR_TOKEN');
+
+ws.on('open', () => {
+  console.log('Connected to actor');
+  
+  // Send subscribe message
+  ws.send(JSON.stringify({
+    op: 'subscribe',
+    channels: ['all'],
+    users: ['elonmusk', 'vitalikbuterin']
+  }));
+});
+
+ws.on('message', (data) => {
+  const message = JSON.parse(data);
+  console.log('Received:', message);
+});
+
+ws.on('close', (code, reason) => {
+  console.log('Connection closed:', code, reason);
+});
+
+ws.on('error', (error) => {
+  console.error('WebSocket error:', error);
+});
+```
+
+### Subscribe Protocol
+
+After connecting, the client must send a subscribe message within 30 seconds to specify which channels to monitor.
+
+**Subscribe Message Format**:
+```json
+{
+  "op": "subscribe",
+  "channels": ["all"],
+  "users": ["elonmusk", "vitalikbuterin"]
+}
+```
+
+**Fields**:
+- `op`: Always "subscribe" (required)
+- `channels`: Array of channel names (required)
+- `users`: Array of usernames for actor-side filtering (optional, omit if no filters)
+
+**Available Channels**:
+- `all`: All event types (tweets, follows, profile updates)
+- `tweets`: Only tweet events (post_created)
+- `following`: Only follow events (follow_created)
+- `profile`: Only profile update events (user_updated)
+
+**Multiple Channels**: You can subscribe to multiple channels simultaneously:
+```json
+{
+  "op": "subscribe",
+  "channels": ["tweets", "following"]
+}
+```
+
+**User Filtering**: Include the `users` array for actor-side filtering:
+```json
+{
+  "op": "subscribe",
+  "channels": ["all"],
+  "users": ["elonmusk", "vitalikbuterin", "cz_binance"]
+}
+```
+
+When the `users` field is included in the subscribe message, the actor applies server-side filtering and only sends events from the specified users to your client. This reduces the number of events delivered and lowers your usage costs.
+
+**Without User Filtering**: Omit the `users` field to receive all events:
+```json
+{
+  "op": "subscribe",
+  "channels": ["all"]
+}
+```
+
+When the `users` field is omitted, the actor sends events from all monitored users to your client.
+
+**Subscription Confirmation**: After sending the subscribe message, the server responds with a "subscribed" event:
+```json
+{
+  "event_type": "subscribed",
+  "data": {
+    "channels": ["all"],
+    "filter": {
+      "enabled": true,
+      "users_count": 2,
+      "sample_users": ["elonmusk", "vitalikbuterin"]
+    }
+  }
+}
+```
+
+The `filter` object in the subscribed event indicates whether user filtering is active:
+- `enabled: true` - User filtering is active (users field was included in subscribe message)
+- `enabled: false` - No user filtering (users field was omitted)
+- `users_count` - Number of users in the filter
+- `sample_users` - Sample of filtered usernames (may not include all users)
+
+**Example: Filtered Subscription**
+
+Client sends:
+```json
+{
+  "op": "subscribe",
+  "channels": ["tweets"],
+  "users": ["elonmusk", "vitalikbuterin"]
+}
+```
+
+Server responds:
+```json
+{
+  "event_type": "subscribed",
+  "data": {
+    "channels": ["tweets"],
+    "filter": {
+      "enabled": true,
+      "users_count": 2,
+      "sample_users": ["elonmusk", "vitalikbuterin"]
+    }
+  }
+}
+```
+
+Result: Client receives only tweet events from elonmusk and vitalikbuterin.
+
+**Example: Unfiltered Subscription**
+
+Client sends:
+```json
+{
+  "op": "subscribe",
+  "channels": ["all"]
+}
+```
+
+Server responds:
+```json
+{
+  "event_type": "subscribed",
+  "data": {
+    "channels": ["all"],
+    "filter": {
+      "enabled": false
+    }
+  }
+}
+```
+
+Result: Client receives all events from all monitored users.
+
+**Subscription Timeout**: If no subscribe message is sent within 30 seconds, the server closes the connection with code 1008 (Policy Violation).
+
+### Event Streaming
+
+After subscription, the server streams events in real-time as JSON messages.
+
+**Event Message Format**:
+```json
+{
+  "event_type": "post_created",
+  "data": {
+    "username": "elonmusk",
+    "action": "post_created",
+    "tweetId": "123456789",
+    "tweet": {
+      "id": "123456789",
+      "type": "tweet",
+      "created_at": "2024-01-15T14:30:22.000Z",
+      "body": {
+        "text": "Bitcoin is the future...",
+        "urls": [],
+        "mentions": []
+      },
+      "author": {
+        "handle": "elonmusk",
+        "id": "44196397",
+        "verified": true,
+        "profile": {
+          "name": "Elon Musk",
+          "avatar": "https://...",
+          "bio": "..."
+        }
+      },
+      "metrics": {
+        "likes": 1000,
+        "retweets": 500,
+        "replies": 200,
+        "views": 50000
+      }
+    }
+  }
+}
+```
+
+**Event Types**:
+- `post_created`: New tweet posted
+- `follow_created`: User followed another user
+- `user_updated`: User profile updated
+
+See [Data Models](#data-models) section for complete event structures.
+
+### Control Events
+
+The server sends control events for connection management and status updates.
+
+**Connected Event**:
+```json
+{
+  "event_type": "connected",
+  "data": {
+    "connection_id": "ws_1234567890_abc123",
+    "channels": [],
+    "filter": {"enabled": false}
+  }
+}
+```
+
+**Subscribed Event**:
+```json
+{
+  "event_type": "subscribed",
+  "data": {
+    "channels": ["all"],
+    "filter": {
+      "enabled": true,
+      "users_count": 2,
+      "sample_users": ["elonmusk", "vitalikbuterin"]
+    }
+  }
+}
+```
+
+**Shutdown Event**:
+```json
+{
+  "event_type": "shutdown",
+  "data": {
+    "message": "Server shutting down"
+  }
+}
+```
+
+When a shutdown event is received, the client should wait 5 seconds and then reconnect automatically.
+
+**Error Event**:
+```json
+{
+  "event_type": "error",
+  "data": {
+    "code": "INVALID_SUBSCRIPTION",
+    "message": "channels must be an array"
+  }
+}
+```
+
+**Common Error Codes**:
+- `INVALID_SUBSCRIPTION`: Subscribe message format is invalid
+- `INVALID_CHANNELS`: Channel names are invalid
+- `SUBSCRIPTION_TIMEOUT`: No subscribe message received within 30 seconds
+- `AUTHENTICATION_FAILED`: Invalid or missing token
+
+### Error Handling
+
+**WebSocket Close Codes**:
+- `1000` (Normal Closure): Clean disconnect, client does NOT reconnect
+- `1006` (Abnormal Closure): Network issue, client reconnects with exponential backoff
+- `1008` (Policy Violation): Authentication failure or subscription timeout, client does NOT reconnect
+- `1011` (Internal Error): Server error, client reconnects with exponential backoff
+
+**Heartbeat**: The server sends WebSocket protocol-level ping frames every 15 seconds. The ws library automatically responds with pong frames. No application-level handling is required.
+
+**Reconnection**: The client implements automatic reconnection with exponential backoff:
+- Initial delay: 1000ms (1 second)
+- Max delay: 30000ms (30 seconds)
+- Backoff multiplier: 2.0
+- Max attempts: 0 (infinite)
+
+**Reconnection Formula**:
+```
+delay = min(initialDelay × multiplier^attempts, maxDelay)
+```
+
+**Special Cases**:
+- Authentication failure (code 1008): No reconnection attempted
+- Server shutdown: Wait 5 seconds, then reconnect (no exponential backoff)
+- Max attempts reached: Stop reconnection and emit fatal error (if maxAttempts > 0)
+
+---
+
+## Application HTTP Endpoints
 
 ### Health Status Endpoint
 
@@ -36,7 +364,7 @@ Returns current application health, connection status, and statistics.
 {
   connection: {
     status: 'connected' | 'disconnected' | 'reconnecting',
-    endpoint: string,
+    channels: string[],
     uptime: number  // seconds since connection established
   },
   events: {
@@ -78,7 +406,7 @@ curl http://localhost:3001/status
 {
   "connection": {
     "status": "connected",
-    "endpoint": "/events/twitter/all",
+    "channels": ["all"],
     "uptime": 3600
   },
   "events": {
@@ -170,7 +498,7 @@ If the endpoint is unavailable, the application continues operating with the cac
 
 ---
 
-## WebSocket API
+## Dashboard WebSocket API
 
 The dashboard uses WebSocket (Socket.io) for real-time bidirectional communication between the server and web clients.
 
@@ -424,14 +752,14 @@ socket.on('stats', (stats) => {
 
 ##### 3. `connection-status`
 
-Broadcasts SSE connection status changes to all connected clients.
+Broadcasts WebSocket connection status changes to all connected clients.
 
 **Payload**:
 
 ```typescript
 {
   status: 'connected' | 'disconnected' | 'reconnecting',
-  endpoint: string,
+  channels: string[],
   timestamp: string  // ISO 8601 format
 }
 ```
@@ -450,7 +778,7 @@ socket.on('connection-status', (status) => {
 ```json
 {
   "status": "connected",
-  "endpoint": "/events/twitter/all",
+  "channels": ["all"],
   "timestamp": "2024-01-15T14:30:22.000Z"
 }
 ```
@@ -517,7 +845,7 @@ socket.emit('update-filters', {
 
 The application processes events in two formats:
 
-1. **Actor Event Format**: The raw format received from the Apify actor via SSE
+1. **Actor Event Format**: The raw format received from the Apify actor via WebSocket
 2. **Internal Event Format**: The transformed format used within the application
 
 Understanding both formats is essential for debugging and integration.
@@ -526,7 +854,7 @@ Understanding both formats is essential for debugging and integration.
 
 ### Actor Event Format (Input from Apify Actor)
 
-This is the raw event structure sent by the crypto-twitter-tracker Apify actor via Server-Sent Events (SSE).
+This is the raw event structure sent by the crypto-twitter-tracker Apify actor via WebSocket.
 
 **Structure**:
 
@@ -667,7 +995,7 @@ interface ActorEvent {
 
 ### Internal Event Format (After Transformation)
 
-After the SSEClient transforms actor events, they use this internal format throughout the application.
+After the WSSClient transforms actor events, they use this internal format throughout the application.
 
 **Structure**:
 
@@ -989,8 +1317,8 @@ interface TwitterEvent {
 
 **Transformation Process**:
 
-1. Actor sends event in actor format via SSE
-2. SSEClient.transformActorEvent() converts to internal format
+1. Actor sends event in actor format via WebSocket
+2. WSSClient.transformEvent() converts to internal format
 3. Complete actor data is preserved in the `data` field (deep copy)
 4. User information is extracted and normalized in the `user` field
 5. Event type is preserved from actor's `event_type`
@@ -1168,7 +1496,7 @@ Complete health status returned by `/status` endpoint.
 interface HealthStatus {
   connection: {
     status: 'connected' | 'disconnected' | 'reconnecting';
-    endpoint: string;
+    channels: string[];
     uptime: number;  // seconds
   };
   events: {
@@ -1281,7 +1609,7 @@ This section covers common issues related to event processing, data transformati
 
 2. **Check Raw Actor Events**: Look for log entries like:
    ```
-   [SSEClient] Raw actor event: {
+   [WSSClient] Raw actor event: {
      "data": {
        "username": "elonmusk",
        "tweet": { "body": { "text": "..." } }
@@ -1293,7 +1621,7 @@ This section covers common issues related to event processing, data transformati
 
 3. **Check Transformed Events**: Look for log entries like:
    ```
-   [SSEClient] Transformed event: {
+   [WSSClient] Transformed event: {
      "type": "post_created",
      "user": { "username": "elonmusk" },
      "data": { ... }
@@ -1310,7 +1638,7 @@ This section covers common issues related to event processing, data transformati
 
 1. **If raw actor events are incomplete**: The issue is with the actor, not the client. Contact actor maintainer.
 
-2. **If transformation loses data**: Check SSEClient.transformActorEvent():
+2. **If transformation loses data**: Check WSSClient.transformEvent():
    ```typescript
    // Should use deep copy
    data: JSON.parse(JSON.stringify(eventData))
@@ -1325,7 +1653,7 @@ This section covers common issues related to event processing, data transformati
 **Example Debug Output**:
 
 ```
-[SSEClient] Raw actor event: {
+[WSSClient] Raw actor event: {
   "data": {
     "username": "elonmusk",
     "action": "post_created",
@@ -1338,7 +1666,7 @@ This section covers common issues related to event processing, data transformati
   "event_type": "post_created"
 }
 
-[SSEClient] Transformed event: {
+[WSSClient] Transformed event: {
   "type": "post_created",
   "timestamp": "2024-01-15T14:30:22.000Z",
   "primaryId": "123",
@@ -1395,7 +1723,7 @@ This section covers common issues related to event processing, data transformati
 
 4. **Check for Transformation Errors**:
    ```
-   [SSEClient] Transformation error: ...
+   [WSSClient] Transformation error: ...
    ```
 
 **Solutions**:
@@ -1409,7 +1737,7 @@ This section covers common issues related to event processing, data transformati
                             typeof event.data === 'object';
    ```
 
-2. **If transformation fails**: Check SSEClient.transformActorEvent() for errors:
+2. **If transformation fails**: Check WSSClient.transformEvent() for errors:
    - Verify username extraction logic
    - Verify event type mapping
    - Verify data preservation
@@ -1454,7 +1782,7 @@ This section covers common issues related to event processing, data transformati
 
 2. **Check for Reference Issues**: If modifying the original actor event affects the transformed event, it's a shallow copy issue.
 
-3. **Verify Deep Copy**: Check SSEClient.transformActorEvent():
+3. **Verify Deep Copy**: Check WSSClient.transformEvent():
    ```typescript
    // Should be deep copy
    data: JSON.parse(JSON.stringify(eventData))
@@ -1536,7 +1864,7 @@ Debug mode provides detailed visibility into the event processing pipeline. Here
 #### 1. Raw Actor Event Logs
 
 ```
-[SSEClient] Raw actor event: {
+[WSSClient] Raw actor event: {
   "data": {
     "username": "elonmusk",
     "action": "post_created",
@@ -1559,7 +1887,7 @@ Debug mode provides detailed visibility into the event processing pipeline. Here
 #### 2. Transformed Event Logs
 
 ```
-[SSEClient] Transformed event: {
+[WSSClient] Transformed event: {
   "type": "post_created",
   "timestamp": "2024-01-15T14:30:22.000Z",
   "primaryId": "123456789",
@@ -1604,8 +1932,8 @@ or
 #### 4. Error Logs
 
 ```
-[SSEClient] Transformation error: Cannot read property 'handle' of undefined
-[SSEClient] Problematic data: { ... }
+[WSSClient] Transformation error: Cannot read property 'handle' of undefined
+[WSSClient] Problematic data: { ... }
 ```
 
 **What to check**:
@@ -1621,13 +1949,13 @@ or
 
 **Debug Output**:
 ```
-[SSEClient] Raw actor event: {
+[WSSClient] Raw actor event: {
   "data": {
     "tweet": { "body": { "text": "Hello world" } }
   }
 }
 
-[SSEClient] Transformed event: {
+[WSSClient] Transformed event: {
   "data": {
     "tweet": { "body": { "text": "Hello world" } }
   }
@@ -1647,7 +1975,7 @@ const tweetText = (event.data as any).tweet?.body?.text || 'No text available';
 
 **Debug Output**:
 ```
-[SSEClient] Transformed event: {
+[WSSClient] Transformed event: {
   "type": "post_created",
   "data": { ... }
   // Missing "user" field
@@ -1658,7 +1986,7 @@ const tweetText = (event.data as any).tweet?.body?.text || 'No text available';
 
 **Diagnosis**: Transformation is not extracting user information correctly.
 
-**Solution**: Update SSEClient.transformActorEvent() to extract username:
+**Solution**: Update WSSClient.transformEvent() to extract username:
 ```typescript
 const username = eventData.username || 
                  eventData.user?.handle || 
@@ -1670,7 +1998,7 @@ const username = eventData.username ||
 
 **Debug Output**:
 ```
-[SSEClient] Raw actor event: {
+[WSSClient] Raw actor event: {
   "data": {
     "tweet": {
       "body": { "text": "Hello" },
@@ -1679,7 +2007,7 @@ const username = eventData.username ||
   }
 }
 
-[SSEClient] Transformed event: {
+[WSSClient] Transformed event: {
   "data": {
     "tweet": {
       "body": { "text": "Hello" }

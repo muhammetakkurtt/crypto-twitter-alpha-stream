@@ -7,6 +7,7 @@ This guide provides comprehensive documentation for all configuration options in
 - [Configuration Methods](#configuration-methods)
 - [Configuration Priority](#configuration-priority)
 - [Required Configuration](#required-configuration)
+- [Migration from SSE to WebSocket](#migration-from-sse-to-websocket)
 - [Environment Variables](#environment-variables)
 - [JSON Configuration File](#json-configuration-file)
 - [Configuration Examples](#configuration-examples)
@@ -62,10 +63,178 @@ The URL of the deployed Apify Standby Actor.
 **Required**: Yes  
 **Type**: String (URL)  
 **Source**: Environment variable  
-**Default**: `https://muhammetakkurtt--crypto-twitter-tracker.apify.actor`  
 **Example**: `APIFY_ACTOR_URL=https://muhammetakkurtt--crypto-twitter-tracker.apify.actor`
 
-The base URL of the crypto-twitter-tracker actor that provides the SSE stream.
+The base URL of the crypto-twitter-tracker actor that provides the WebSocket stream. Supports http/https/ws/wss formats - automatically converted to the appropriate protocol.
+
+**Important**: This configuration is mandatory. The application will fail to start without it.
+
+---
+
+## Migration from SSE to WebSocket
+
+The application has migrated from Server-Sent Events (SSE) to WebSocket (WSS) for improved real-time communication. This section helps you migrate your configuration.
+
+### What Changed
+
+**Protocol**: SSE → WebSocket
+- Old: Unidirectional HTTP-based streaming
+- New: Bidirectional WebSocket connection with subscribe protocol
+
+**Configuration**:
+- `ENDPOINT` → `CHANNELS` (now supports multiple channels)
+- URL format now supports ws/wss in addition to http/https
+
+**Connection Flow**:
+- Old: HTTP GET request to SSE endpoint
+- New: WebSocket connection + subscribe message
+
+### Migration Steps
+
+1. **Update Environment Variable**:
+   ```env
+   # Old (SSE)
+   ENDPOINT=all
+   
+   # New (WebSocket)
+   CHANNELS=all
+   ```
+
+2. **Multiple Channels** (new feature):
+   ```env
+   # You can now subscribe to multiple channels
+   CHANNELS=tweets,following
+   ```
+
+3. **URL Format** (optional):
+   ```env
+   # All formats work - automatically converted
+   APIFY_ACTOR_URL=https://muhammetakkurtt--crypto-twitter-tracker.apify.actor  # Converted to wss://
+   APIFY_ACTOR_URL=wss://muhammetakkurtt--crypto-twitter-tracker.apify.actor    # Used as-is
+   ```
+
+4. **Update config.json** (if using):
+   ```json
+   {
+     "apify": {
+       "channels": ["all"]  // Changed from "endpoint": "all"
+     }
+   }
+   ```
+
+### Backward Compatibility
+
+The migration maintains backward compatibility for all user-facing behavior:
+- Event format remains unchanged
+- Filtering works identically
+- Output channels work identically
+- All configuration options (except ENDPOINT→CHANNELS) remain the same
+
+### New Features
+
+**Multiple Channel Subscription**:
+```env
+# Subscribe to multiple event types simultaneously
+CHANNELS=tweets,following,profile
+```
+
+**Improved Reconnection**:
+- WebSocket protocol-level ping/pong for connection health
+- Automatic reconnection with exponential backoff
+- Graceful shutdown handling (5 second delay before reconnect)
+
+**URL Flexibility**:
+- Accepts http/https/ws/wss formats
+- Automatically converts to appropriate protocol
+- Same base URL works for WebSocket and REST endpoints
+
+### Troubleshooting Migration
+
+**Problem**: "ENDPOINT environment variable not recognized"
+
+**Solution**: Change `ENDPOINT` to `CHANNELS` in your `.env` file
+
+**Problem**: "Invalid channels configuration"
+
+**Solution**: Ensure channels is comma-separated: `CHANNELS=tweets,following`
+
+**Problem**: "Connection fails with new configuration"
+
+**Solution**: 
+- Verify your token is still valid
+- Check that the actor URL is correct
+- Try with `CHANNELS=all` first to test connection
+
+### Channel Normalization Behavior
+
+The application automatically normalizes channel configurations to align with the tracker server's protocol semantics. This ensures consistent behavior between client and server.
+
+#### Normalization Rules
+
+1. **Empty Channels Array**: When no channels are specified (empty array), the application normalizes it to `["all"]`
+   ```env
+   # These are equivalent:
+   CHANNELS=
+   CHANNELS=all
+   ```
+
+2. **"all" Channel Dominance**: When "all" is present with other channels, the application normalizes to `["all"]` only
+   ```env
+   # These are all equivalent:
+   CHANNELS=all
+   CHANNELS=all,tweets
+   CHANNELS=tweets,all,following
+   # All normalize to: ["all"]
+   ```
+
+3. **Multiple Specific Channels**: When multiple specific channels are provided without "all", they remain unchanged
+   ```env
+   CHANNELS=tweets,following
+   # Remains: ["tweets", "following"]
+   ```
+
+#### Why Normalization Happens
+
+The tracker server treats "all" as a special channel that includes all event types. When "all" is present, subscribing to additional specific channels is redundant. The normalization ensures:
+
+- **Protocol Alignment**: Client behavior matches server semantics
+- **Efficiency**: Avoids redundant subscriptions
+- **Clarity**: Makes the actual subscription explicit
+
+#### Normalization Examples
+
+| Configuration | Normalized To | Explanation |
+|--------------|---------------|-------------|
+| `CHANNELS=` | `["all"]` | Empty defaults to all events |
+| `CHANNELS=all` | `["all"]` | Already normalized |
+| `CHANNELS=tweets` | `["tweets"]` | Single specific channel |
+| `CHANNELS=tweets,following` | `["tweets", "following"]` | Multiple specific channels |
+| `CHANNELS=all,tweets` | `["all"]` | "all" dominates |
+| `CHANNELS=tweets,all,profile` | `["all"]` | "all" dominates |
+
+#### Validation Behavior
+
+The application validates channels configuration during startup:
+
+- **Empty array**: Accepted (normalizes to `["all"]`)
+- **Valid channels**: Accepted (normalized if needed)
+- **Invalid channels**: Rejected with error message
+
+**Example Startup Log**:
+```
+✓ Configuration validated successfully
+  Channels: ["all"] (normalized from ["all", "tweets"])
+```
+
+#### Best Practices
+
+1. **Use "all" for comprehensive monitoring**: If you want all event types, just use `CHANNELS=all`
+
+2. **Use specific channels for targeted monitoring**: If you only need tweets, use `CHANNELS=tweets`
+
+3. **Don't mix "all" with specific channels**: The application will normalize it to `["all"]` anyway
+
+4. **Leave empty for default behavior**: Empty channels configuration defaults to `["all"]`
 
 ---
 
@@ -88,26 +257,105 @@ Your Apify API token for authentication.
 
 **Required**: Yes  
 **Type**: String (URL)  
-**Default**: `https://muhammetakkurtt--crypto-twitter-tracker.apify.actor`  
+**Source**: Environment variable  
 **Example**: `APIFY_ACTOR_URL=https://muhammetakkurtt--crypto-twitter-tracker.apify.actor`
 
-The base URL of the deployed Apify Standby Actor that provides the SSE stream.
+The base URL of the deployed Apify Standby Actor that provides the WebSocket stream. Supports http/https/ws/wss formats - automatically converted to the appropriate protocol.
+
+**Important**: This configuration is mandatory. The application will fail to start without it.
+
+**URL Format Flexibility**:
+- `http://host` → Converted to `ws://host` for WebSocket
+- `https://host` → Converted to `wss://host` for WebSocket
+- `ws://host` → Used as-is for WebSocket
+- `wss://host` → Used as-is for WebSocket
 
 **Actor Page**: [https://apify.com/muhammetakkurtt/crypto-twitter-tracker?fpr=muh](https://apify.com/muhammetakkurtt/crypto-twitter-tracker?fpr=muh)
 
-#### ENDPOINT
+#### Protocol Handling and Automatic Detection
+
+The application automatically handles protocol conversion between HTTP/HTTPS and WebSocket (WS/WSS) protocols. This allows you to use any URL format, and the application will convert it to the appropriate protocol for each use case.
+
+**How It Works**:
+
+1. **WebSocket Connections**: The application converts HTTP/HTTPS URLs to WS/WSS for WebSocket connections
+   - `http://host` → `ws://host` (WebSocket connection)
+   - `https://host` → `wss://host` (WebSocket connection)
+   - `ws://host` → `ws://host` (used as-is)
+   - `wss://host` → `wss://host` (used as-is)
+
+2. **REST Endpoints**: The application converts WS/WSS URLs to HTTP/HTTPS for REST API calls (like `/active-users`)
+   - `ws://host` → `http://host` (REST endpoint)
+   - `wss://host` → `https://host` (REST endpoint)
+   - `http://host` → `http://host` (used as-is)
+   - `https://host` → `https://host` (used as-is)
+
+**Protocol Selection for REST Endpoints**:
+
+When making HTTP requests to REST endpoints (like `/active-users`), the application automatically selects the correct HTTP client based on the converted URL protocol:
+
+- **HTTP URLs** (`http://`): Uses Node.js `http` module
+- **HTTPS URLs** (`https://`): Uses Node.js `https` module
+
+This ensures that both HTTP and HTTPS endpoints work correctly without manual configuration.
+
+**Examples**:
+
+| Base URL Configuration | WebSocket Connection | REST Endpoint | HTTP Client |
+|------------------------|---------------------|---------------|-------------|
+| `http://localhost:8080` | `ws://localhost:8080` | `http://localhost:8080/active-users` | `http` |
+| `https://example.com` | `wss://example.com` | `https://example.com/active-users` | `https` |
+| `ws://localhost:8080` | `ws://localhost:8080` | `http://localhost:8080/active-users` | `http` |
+| `wss://example.com` | `wss://example.com` | `https://example.com/active-users` | `https` |
+
+**Why This Matters**:
+
+- **Flexibility**: You can use any URL format in your configuration
+- **Consistency**: The same base URL works for both WebSocket and REST endpoints
+- **Security**: HTTPS/WSS URLs automatically use secure connections
+- **Development**: Use `http://localhost` for local development without SSL certificates
+- **Production**: Use `https://` URLs for production deployments with SSL
+
+**Configuration Examples**:
+
+```env
+# Local development (HTTP)
+APIFY_ACTOR_URL=http://localhost:8080
+
+# Production (HTTPS)
+APIFY_ACTOR_URL=https://muhammetakkurtt--crypto-twitter-tracker.apify.actor
+
+# Explicit WebSocket (WS)
+APIFY_ACTOR_URL=ws://localhost:8080
+
+# Explicit WebSocket Secure (WSS)
+APIFY_ACTOR_URL=wss://muhammetakkurtt--crypto-twitter-tracker.apify.actor
+```
+
+All of these configurations work correctly - the application handles protocol conversion automatically.
+
+#### CHANNELS
 
 **Required**: No  
-**Type**: String  
+**Type**: Comma-separated string  
 **Default**: `all`  
 **Options**: `all`, `tweets`, `following`, `profile`  
-**Example**: `ENDPOINT=tweets`
+**Example**: `CHANNELS=tweets,following`
 
-Selects which SSE endpoint to connect to:
+Selects which channels to subscribe to via WebSocket. You can subscribe to multiple channels simultaneously.
+
+**Available Channels**:
 - `all` - All Twitter events (posts, profile updates, following changes)
 - `tweets` - Only new tweet/post events
 - `following` - Only following/unfollowing events
 - `profile` - Only profile update events
+
+**Multiple Channels**: Specify multiple channels separated by commas:
+```env
+CHANNELS=tweets,following
+```
+
+This will subscribe to both tweets and following events simultaneously.
 
 ---
 
@@ -124,7 +372,7 @@ Filter events to only include specific Twitter usernames. This enables both acto
 
 **How It Works - Two-Layer Filtering**:
 
-1. **Actor-Side Filtering (Layer 1)**: When you configure `USERS`, the application appends a `?users=` query parameter to the actor URL. The actor filters events at the source and only delivers events from your specified users. This significantly reduces costs because you're only charged for events actually delivered to your client.
+1. **Actor-Side Filtering (Layer 1)**: When you configure `USERS`, the application includes them in the WebSocket subscribe message. The actor filters events at the source and only delivers events from your specified users. This significantly reduces costs because you're only charged for events actually delivered to your client.
 
 2. **Client-Side Filtering (Layer 2)**: After events are received, the application applies additional client-side filters (if configured). This provides extra refinement but doesn't affect costs since events are already delivered.
 
@@ -178,7 +426,7 @@ The application uses a two-layer filtering system that combines actor-side and c
 
 #### Layer 1: Actor-Side Filtering (Cost Optimization)
 
-When you configure the `USERS` environment variable, the application appends a `?users=` query parameter to the actor connection URL. The actor filters events at the source before delivering them to your client.
+When you configure the `USERS` environment variable, the application includes them in the WebSocket subscribe message. The actor filters events at the source before delivering them to your client.
 
 **Benefits**:
 - Reduces network traffic (fewer events transmitted)
@@ -189,7 +437,9 @@ When you configure the `USERS` environment variable, the application appends a `
 ```
 User Config: USERS=elonmusk,vitalikbuterin
          ↓
-Application connects: https://actor.url/events/twitter/all?token=abc&users=elonmusk,vitalikbuterin
+Application connects via WebSocket
+         ↓
+Application sends subscribe message: {"op":"subscribe","channels":["all"],"users":["elonmusk","vitalikbuterin"]}
          ↓
 Actor filters at source: Only sends elonmusk and vitalikbuterin events
          ↓
@@ -510,7 +760,7 @@ Configuration can also be provided via `config/config.json`. This is useful for:
 ```json
 {
   "apify": {
-    "endpoint": "all" | "tweets" | "following" | "profile"
+    "channels": ["all"] | ["tweets"] | ["following"] | ["profile"] | ["tweets", "following"]
   },
   "filters": {
     "users": ["username1", "username2"],
@@ -573,7 +823,7 @@ Minimal configuration for CLI output only.
 ```env
 APIFY_TOKEN=your_token_here
 APIFY_ACTOR_URL=https://muhammetakkurtt--crypto-twitter-tracker.apify.actor
-ENDPOINT=all
+CHANNELS=all
 DASHBOARD_ENABLED=false
 ```
 
@@ -585,7 +835,7 @@ Monitor specific users and keywords with web dashboard.
 ```env
 APIFY_TOKEN=your_token_here
 APIFY_ACTOR_URL=https://muhammetakkurtt--crypto-twitter-tracker.apify.actor
-ENDPOINT=tweets
+CHANNELS=tweets
 USERS=elonmusk,vitalikbuterin,cz_binance
 KEYWORDS=bitcoin,ethereum,crypto
 DASHBOARD_ENABLED=true
@@ -601,7 +851,7 @@ Receive alerts on Telegram without CLI or dashboard.
 ```env
 APIFY_TOKEN=your_token_here
 APIFY_ACTOR_URL=https://muhammetakkurtt--crypto-twitter-tracker.apify.actor
-ENDPOINT=all
+CHANNELS=all
 CLI_ENABLED=false
 DASHBOARD_ENABLED=false
 TELEGRAM_ENABLED=true
@@ -617,7 +867,7 @@ Use all output channels simultaneously.
 ```env
 APIFY_TOKEN=your_token_here
 APIFY_ACTOR_URL=https://muhammetakkurtt--crypto-twitter-tracker.apify.actor
-ENDPOINT=all
+CHANNELS=all
 USERS=elonmusk,vitalikbuterin
 KEYWORDS=bitcoin,ethereum
 
@@ -651,7 +901,7 @@ Configuration optimized for high-volume streams.
 ```env
 APIFY_TOKEN=your_token_here
 APIFY_ACTOR_URL=https://muhammetakkurtt--crypto-twitter-tracker.apify.actor
-ENDPOINT=all
+CHANNELS=all
 
 # Shorter dedup TTL for high volume
 DEDUP_TTL=30
@@ -675,7 +925,7 @@ Use different configurations for development and production.
 ```env
 APIFY_TOKEN=dev_token_here
 APIFY_ACTOR_URL=https://muhammetakkurtt--crypto-twitter-tracker.apify.actor
-ENDPOINT=tweets
+CHANNELS=tweets
 USERS=testuser1,testuser2
 DASHBOARD_ENABLED=true
 DASHBOARD_PORT=3000
@@ -687,7 +937,7 @@ TELEGRAM_ENABLED=false
 ```env
 APIFY_TOKEN=prod_token_here
 APIFY_ACTOR_URL=https://muhammetakkurtt--crypto-twitter-tracker.apify.actor
-ENDPOINT=all
+CHANNELS=all
 DASHBOARD_ENABLED=true
 DASHBOARD_PORT=8080
 CLI_ENABLED=false
@@ -706,7 +956,7 @@ Use JSON for non-sensitive settings and environment variables for secrets.
 ```json
 {
   "apify": {
-    "endpoint": "tweets"
+    "channels": ["tweets"]
   },
   "filters": {
     "users": ["elonmusk", "vitalikbuterin"],
@@ -869,8 +1119,8 @@ ALERT_RATE_LIMIT=50  # Adjust based on your service limits
    - Keep personal tokens in `.env` (gitignored)
    - Override team settings as needed
 
-3. **Test with different endpoints**
-   - Start with `ENDPOINT=tweets` for lower volume
+3. **Test with different channels**
+   - Start with `CHANNELS=tweets` for lower volume
    - Test filters with specific users
 
 4. **Monitor logs during development**
