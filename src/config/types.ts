@@ -2,12 +2,12 @@
  * Configuration type definitions
  */
 
-export type EndpointType = 'all' | 'tweets' | 'following' | 'profile';
+export type Channel = 'all' | 'tweets' | 'following' | 'profile';
 
 export interface ApifyConfig {
   token: string;
   actorUrl: string;
-  endpoint: EndpointType;
+  channels: Channel[]; // Multiple subscription channels for WebSocket
 }
 
 export interface FilterConfig {

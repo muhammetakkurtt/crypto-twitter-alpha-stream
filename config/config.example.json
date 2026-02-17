@@ -1,7 +1,7 @@
 {
   "apify": {
-    "actorUrl": "https://muhammetakkurtt--crypto-twitter-tracker.apify.actor",
-    "endpoint": "all"
+    "actorUrl": "wss://muhammetakkurtt--crypto-twitter-tracker.apify.actor",
+    "channels": ["all"]
   },
   "filters": {
     "users": [],
@@ -36,7 +36,7 @@
     "initialDelay": 1000,
     "maxDelay": 30000,
     "backoffMultiplier": 2.0,
-    "maxAttempts": 10
+    "maxAttempts": 0
   },
   "logging": {
     "fileLogging": false,

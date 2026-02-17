@@ -6,7 +6,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as dotenv from 'dotenv';
-import { AppConfig, EndpointType } from './types';
+import { AppConfig, Channel } from './types';
 import { LogSanitizer } from '../utils/LogSanitizer';
 
 export class ConfigManager {
@@ -90,7 +90,7 @@ export class ConfigManager {
       apify: {
         token: '',
         actorUrl: '',
-        endpoint: 'all',
+        channels: ['all'], // Default to 'all' channel for WebSocket
       },
       filters: {
         users: [],
@@ -125,7 +125,7 @@ export class ConfigManager {
         initialDelay: 1000,
         maxDelay: 30000,
         backoffMultiplier: 2.0,
-        maxAttempts: 10,
+        maxAttempts: 0,
       },
       logging: {
         fileLogging: false,
@@ -204,11 +204,31 @@ export class ConfigManager {
       config.apify.actorUrl = process.env.APIFY_ACTOR_URL;
     }
 
-    // Endpoint selection
-    if (process.env.ENDPOINT) {
-      const endpoint = process.env.ENDPOINT.toLowerCase();
-      if (this.isValidEndpoint(endpoint)) {
-        config.apify.endpoint = endpoint as EndpointType;
+    // Channels selection (multiple channels for WebSocket)
+    if (process.env.CHANNELS !== undefined) {
+      // Empty string means "override to all channels"
+      if (process.env.CHANNELS.trim() === '') {
+        config.apify.channels = [];  // Will be normalized to ['all']
+      } else {
+        const rawChannels = process.env.CHANNELS.split(',')
+          .map(c => c.trim().toLowerCase())
+          .filter(c => c.length > 0);
+        
+        // Validate all channels before accepting any
+        const invalidChannels = rawChannels.filter(c => !this.isValidChannel(c));
+        if (invalidChannels.length > 0) {
+          throw new Error(
+            `Invalid channel(s) in CHANNELS environment variable: ${invalidChannels.join(', ')}. ` +
+            `Valid channels are: all, tweets, following, profile`
+          );
+        }
+        
+        // Remove duplicates
+        const uniqueChannels = [...new Set(rawChannels)];
+        
+        if (uniqueChannels.length > 0) {
+          config.apify.channels = uniqueChannels as Channel[];
+        }
       }
     }
 
@@ -370,11 +390,15 @@ export class ConfigManager {
     // Validate actor URL format
     this.validateActorUrl(config.apify.actorUrl);
 
-    // Validate endpoint
-    if (!this.isValidEndpoint(config.apify.endpoint)) {
-      throw new Error(
-        `Invalid endpoint: ${config.apify.endpoint}. Must be one of: all, tweets, following, profile`
-      );
+    // Normalize and validate channels
+    config.apify.channels = this.normalizeChannels(config.apify.channels);
+    
+    for (const channel of config.apify.channels) {
+      if (!this.isValidChannel(channel)) {
+        throw new Error(
+          `Invalid channel: ${channel}. Must be one of: all, tweets, following, profile`
+        );
+      }
     }
 
     // Warn if file logging is enabled
@@ -392,13 +416,24 @@ export class ConfigManager {
       throw new Error('Invalid APIFY_TOKEN: Token appears to be too short');
     }
 
-    // Check for common placeholder values
+    // Check for common placeholder values (exact matches or obvious patterns only)
     const tokenLower = token.toLowerCase();
-    const invalidTokens = ['your-token-here', 'test', 'example', 'placeholder'];
+    const exactInvalidTokens = [
+      'your-token-here', 
+      'your_token_here',
+      'yourtokenhere',
+      'token',
+      'placeholder',
+      'example_token',
+      'test_token',
+      'my_token'
+    ];
     
-    // Check if token matches or contains placeholder words
-    if (invalidTokens.includes(tokenLower) || 
-        invalidTokens.some(invalid => tokenLower.includes(invalid))) {
+    // Check if token is exactly a placeholder or starts with obvious placeholder patterns
+    if (exactInvalidTokens.includes(tokenLower) || 
+        tokenLower.startsWith('your') || 
+        tokenLower === 'test' ||
+        tokenLower === 'example') {
       throw new Error('Invalid APIFY_TOKEN: Token appears to be a placeholder value');
     }
   }
@@ -407,19 +442,34 @@ export class ConfigManager {
    * Validate actor URL format
    */
   private validateActorUrl(url: string): void {
-    // Check for common placeholder values
+    // Check for common placeholder values (exact matches or obvious patterns only)
     const urlLower = url.toLowerCase();
-    const invalidUrls = ['your_actor_name', 'your-actor', 'example', 'placeholder'];
+    const obviousPlaceholders = [
+      'your_actor_name',
+      'your-actor-name', 
+      'youractorname',
+      'your-actor',
+      'your_actor',
+      'placeholder',
+      'example.com',
+      'example.org'
+    ];
     
-    if (invalidUrls.some(invalid => urlLower.includes(invalid))) {
+    // Only reject if URL contains obvious placeholder patterns or is exactly a placeholder
+    if (obviousPlaceholders.some(placeholder => urlLower.includes(placeholder)) ||
+        urlLower.startsWith('http://example') ||
+        urlLower.startsWith('https://example') ||
+        urlLower.startsWith('http://your') ||
+        urlLower.startsWith('https://your')) {
       throw new Error('Invalid APIFY_ACTOR_URL: URL appears to be a placeholder value. Please set your actual Apify actor URL.');
     }
 
-    // Validate URL format
+    // Validate URL format - support http, https, ws, wss protocols
     try {
       const parsedUrl = new URL(url);
-      if (!parsedUrl.protocol.startsWith('http')) {
-        throw new Error('Invalid APIFY_ACTOR_URL: URL must use HTTP or HTTPS protocol');
+      const validProtocols = ['http:', 'https:', 'ws:', 'wss:'];
+      if (!validProtocols.includes(parsedUrl.protocol)) {
+        throw new Error('Invalid APIFY_ACTOR_URL: URL must use HTTP, HTTPS, WS, or WSS protocol');
       }
     } catch (error) {
       throw new Error(`Invalid APIFY_ACTOR_URL: ${(error as Error).message}`);
@@ -456,9 +506,33 @@ export class ConfigManager {
   }
 
   /**
-   * Check if endpoint is valid
+   * Check if channel is valid
    */
-  private isValidEndpoint(endpoint: string): boolean {
-    return ['all', 'tweets', 'following', 'profile'].includes(endpoint);
+  private isValidChannel(channel: string): boolean {
+    return ['all', 'tweets', 'following', 'profile'].includes(channel);
+  }
+
+  /**
+   * Normalize channels array to match tracker server behavior
+   * - Empty array normalizes to ["all"]
+   * - ["all", ...others] normalizes to ["all"] only
+   * - Duplicates are removed
+   */
+  private normalizeChannels(channels: Channel[]): Channel[] {
+    // Empty array normalizes to ["all"]
+    if (!channels || channels.length === 0) {
+      return ['all'];
+    }
+
+    // Remove duplicates
+    const uniqueChannels = [...new Set(channels)];
+
+    // If "all" is present with other channels, normalize to ["all"] only
+    if (uniqueChannels.includes('all')) {
+      return ['all'];
+    }
+
+    // Otherwise, return unique channels
+    return uniqueChannels;
   }
 }

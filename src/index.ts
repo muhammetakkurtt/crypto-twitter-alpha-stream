@@ -51,8 +51,9 @@ Options:
 Environment Variables:
   APIFY_TOKEN              Required: Apify actor authentication token
                            Get your token: https://console.apify.com/settings/integrations?fpr=muh
-  APIFY_ACTOR_URL          Required: Apify actor URL (default: https://muhammetakkurtt--crypto-twitter-tracker.apify.actor)
-  ENDPOINT                 SSE endpoint: all, tweets, following, profile (default: all)
+  APIFY_ACTOR_URL          Required: Apify actor URL
+                           Example: https://muhammetakkurtt--crypto-twitter-tracker.apify.actor
+  CHANNELS                 WebSocket channels (comma-separated): all, tweets, following, profile (default: all)
   USERS                    Comma-separated list of usernames to filter
   KEYWORDS                 Comma-separated list of keywords to filter
   CLI_ENABLED              Enable CLI output (default: true)
@@ -74,7 +75,7 @@ Examples:
   node dist/index.js --config=my-config.json
 
   # Start with environment variables
-  APIFY_TOKEN=xxx ENDPOINT=tweets USERS=elonmusk,vitalikbuterin npm start
+  APIFY_TOKEN=xxx CHANNELS=tweets USERS=elonmusk,vitalikbuterin npm start
 
 For more information, visit: https://github.com/your-repo/crypto-twitter-alpha-stream
   `);

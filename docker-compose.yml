@@ -10,7 +10,7 @@ services:
     environment:
       - APIFY_TOKEN=${APIFY_TOKEN}
       - APIFY_ACTOR_URL=${APIFY_ACTOR_URL:-https://muhammetakkurtt--crypto-twitter-tracker.apify.actor}
-      - ENDPOINT=${ENDPOINT:-all}
+      - CHANNELS=${CHANNELS:-all}
       - USERS=${USERS:-}
       - KEYWORDS=${KEYWORDS:-}
       - DASHBOARD_ENABLED=${DASHBOARD_ENABLED:-true}

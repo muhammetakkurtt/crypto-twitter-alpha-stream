@@ -51,6 +51,9 @@ export class Application {
    * Sequence: config → components → StreamCore → outputs
    */
   async start(): Promise<void> {
+    // Set isRunning=true early to allow shutdown() to clean up resources
+    this.isRunning = true;
+    
     try {
       console.log('🚀 Starting Crypto Twitter Alpha Stream...');
       
@@ -58,7 +61,7 @@ export class Application {
       console.log('📋 Loading configuration...');
       this.config = this.configManager.load();
       this.validateStartupConfig(this.config);
-      console.log(`✓ Configuration loaded (endpoint: ${this.config.apify.endpoint})`);
+      console.log(`✓ Configuration loaded (channels: ${this.config.apify.channels.join(', ')})`);
 
       // Step 2: Initialize core components
       console.log('🔧 Initializing core components...');
@@ -69,11 +72,12 @@ export class Application {
 
       // Step 3: Initialize StreamCore
       console.log('🌊 Initializing StreamCore...');
+      
       this.streamCore = new StreamCore(
         {
           baseUrl: this.getBaseUrl(),
           token: this.config.apify.token,
-          endpoint: this.config.apify.endpoint,
+          channels: this.config.apify.channels,
           userFilters: this.config.filters.users.length > 0 ? this.config.filters.users : undefined,
           dedupTTL: this.config.dedup.ttl * 1000,
           reconnectDelay: this.config.reconnect.initialDelay,
@@ -125,10 +129,10 @@ export class Application {
         console.log(`✓ Health Monitor started on port ${this.config.health.port}`);
       }
 
-      // Step 7: Start StreamCore (connect to SSE)
-      console.log('🔌 Connecting to SSE stream...');
+      // Step 7: Start StreamCore (connect to WebSocket)
+      console.log('🔌 Connecting to WebSocket stream...');
       await this.streamCore.start();
-      console.log('✓ Connected to SSE stream');
+      console.log('✓ Connected to WebSocket stream');
 
       // Step 7.5: Update dashboard with connection status and active users
       if (this.dashboardOutput) {
@@ -143,7 +147,6 @@ export class Application {
       // Step 8: Set up graceful shutdown
       this.setupShutdownHandlers();
 
-      this.isRunning = true;
       console.log('');
       console.log('✅ Crypto Twitter Alpha Stream is running!');
       console.log('');
@@ -151,6 +154,7 @@ export class Application {
 
     } catch (error) {
       console.error('❌ Failed to start application:', error);
+      // Call shutdown to clean up any partially initialized resources
       await this.shutdown();
       throw error;
     }
@@ -424,7 +428,7 @@ export class Application {
     if (!this.config) return;
 
     console.log('📊 Status:');
-    console.log(`  Endpoint: ${this.config.apify.endpoint}`);
+    console.log(`  Channels: ${this.config.apify.channels.join(', ')}`);
     console.log(`  Filters: ${this.getFilterSummary()}`);
     console.log(`  Outputs: ${this.getOutputSummary()}`);
     
@@ -487,7 +491,7 @@ export class Application {
     return {
       connection: {
         status: streamStats.connectionStatus,
-        endpoint: streamStats.currentEndpoint,
+        channels: streamStats.channels,
         uptime: 0 // Will be calculated by HealthMonitor
       },
       events: {
