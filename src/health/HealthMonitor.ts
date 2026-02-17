@@ -133,7 +133,7 @@ export class HealthMonitor {
     const status: HealthStatus = {
       connection: {
         status: streamStats.connectionStatus,
-        endpoint: streamStats.currentEndpoint,
+        channels: streamStats.channels,
         uptime: uptimeSeconds
       },
       events: {
@@ -148,6 +148,14 @@ export class HealthMonitor {
         keywords: filterConfig.keywords
       }
     };
+
+    // Add WebSocket-specific metrics if available
+    if (streamStats.reconnectAttempts !== undefined) {
+      status.connection.reconnectAttempts = streamStats.reconnectAttempts;
+    }
+    if (streamStats.bufferedBytes !== undefined) {
+      status.connection.bufferedBytes = streamStats.bufferedBytes;
+    }
 
     return status;
   }

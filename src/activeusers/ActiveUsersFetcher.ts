@@ -1,4 +1,6 @@
+import http from 'http';
 import https from 'https';
+import { WSSClient } from '../ws/WSSClient';
 
 /**
  * Configuration for ActiveUsersFetcher
@@ -29,7 +31,9 @@ export class ActiveUsersFetcher {
    */
   async fetch(): Promise<string[]> {
     try {
-      const url = new URL('/active-users', this.config.baseUrl);
+      // Convert baseUrl to HTTP format (in case it's ws/wss)
+      const httpUrl = WSSClient.toHttpUrl(this.config.baseUrl);
+      const url = new URL('/active-users', httpUrl);
       
       const users = await this.makeHttpRequest(url.toString());
       
@@ -88,6 +92,7 @@ export class ActiveUsersFetcher {
 
   /**
    * Make HTTP GET request to fetch active users
+   * Dynamically selects http or https based on the URL protocol
    */
   private makeHttpRequest(url: string): Promise<string[]> {
     return new Promise((resolve, reject) => {
@@ -98,7 +103,11 @@ export class ActiveUsersFetcher {
         },
       };
 
-      https.get(url, options, (res) => {
+      // Detect protocol from URL and use appropriate module
+      const isHttps = url.startsWith('https://');
+      const httpModule = isHttps ? https : http;
+
+      httpModule.get(url, options, (res) => {
         let data = '';
 
         // Check status code

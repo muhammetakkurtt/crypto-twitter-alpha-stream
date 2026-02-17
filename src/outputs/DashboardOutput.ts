@@ -9,7 +9,7 @@
 import express, { Express, Request, Response } from 'express';
 import { Server as HTTPServer } from 'http';
 import { Server as SocketIOServer, Socket } from 'socket.io';
-import { TwitterEvent, EventStats, HealthStatus, FilterConfig } from '../models/types';
+import { TwitterEvent, EventStats, HealthStatus, FilterConfig, isValidEventType } from '../models/types';
 import { EventBus } from '../eventbus/EventBus';
 
 export interface DashboardConfig {
@@ -23,6 +23,7 @@ export interface DashboardState {
   connectionStatus: 'connected' | 'disconnected' | 'reconnecting';
   stats: EventStats;
   filters: FilterConfig;
+  unknownEventTypes: Record<string, number>;  // Track unknown event types
 }
 
 export class DashboardOutput {
@@ -65,7 +66,8 @@ export class DashboardOutput {
         users: [],
         keywords: [],
         eventTypes: []
-      }
+      },
+      unknownEventTypes: {}  // Initialize empty object for unknown types
     };
 
     this.setupRoutes();
@@ -135,7 +137,7 @@ export class DashboardOutput {
       const status: HealthStatus = {
         connection: {
           status: this.state.connectionStatus,
-          endpoint: 'unknown',
+          channels: ['unknown'],
           uptime: Math.floor((Date.now() - this.state.stats.startTime.getTime()) / 1000)
         },
         events: {
@@ -308,7 +310,18 @@ export class DashboardOutput {
     this.state.stats.total++;
     this.state.stats.delivered++;
     this.state.stats.lastEventTime = new Date();
-    this.state.stats.byType[event.type]++;
+    
+    // Check if event type is valid before updating byType stats
+    if (isValidEventType(event.type)) {
+      this.state.stats.byType[event.type]++;
+    } else {
+      // Track unknown event types separately
+      if (!this.state.unknownEventTypes[event.type]) {
+        this.state.unknownEventTypes[event.type] = 0;
+        console.warn(`[DashboardOutput] Unknown event type received: ${event.type}`);
+      }
+      this.state.unknownEventTypes[event.type]++;
+    }
 
     // Add to events buffer (keep last 100 events)
     this.state.events.push(event);

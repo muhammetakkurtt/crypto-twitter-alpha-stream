@@ -75,11 +75,63 @@ export class DedupCache {
 }
 
 /**
+ * Generates a simple hash from a string
+ * Uses a basic hash algorithm for content comparison
+ * @param str - The string to hash
+ * @returns A numeric hash value
+ */
+function simpleHash(str: string): number {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash; // Convert to 32-bit integer
+  }
+  return Math.abs(hash);
+}
+
+/**
+ * Generates a content hash for event data
+ * This allows detecting when the same event has different content
+ * @param data - The event data to hash
+ * @returns A hash string representing the content
+ */
+function hashEventContent(data: any): string {
+  try {
+    // Stringify the data in a consistent way (sorted keys for consistency)
+    // Use a replacer function to sort keys recursively
+    const jsonStr = JSON.stringify(data, (_key, value) => {
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        // Sort object keys
+        return Object.keys(value)
+          .sort()
+          .reduce((sorted: any, k) => {
+            sorted[k] = value[k];
+            return sorted;
+          }, {});
+      }
+      return value;
+    });
+    return simpleHash(jsonStr).toString(36);
+  } catch (error) {
+    // If hashing fails, return a timestamp-based fallback
+    return Date.now().toString(36);
+  }
+}
+
+/**
  * Generates a deduplication key for a Twitter event
- * Key format: {eventType}:{primaryId}:{timestamp}
+ * Key format: {eventType}:{primaryId}:{contentHash}
+ * 
+ * The content hash ensures that:
+ * - Identical events (same content) are deduplicated
+ * - Updated events (different content) are processed
+ * - Works for all event types (created, updated, etc.)
+ * 
  * @param event - The Twitter event to generate a key for
  * @returns The deduplication key
  */
 export function generateDedupKey(event: TwitterEvent): string {
-  return `${event.type}:${event.primaryId}:${event.timestamp}`;
+  const contentHash = hashEventContent(event.data);
+  return `${event.type}:${event.primaryId}:${contentHash}`;
 }
