@@ -34,7 +34,7 @@ describe('StreamCore Integration Tests', () => {
         {
           baseUrl: 'http://localhost:3000',
           token: 'test-token',
-          endpoint: 'all'
+          channels: ['all']
         },
         filterPipeline,
         dedupCache,
@@ -102,7 +102,7 @@ describe('StreamCore Integration Tests', () => {
         {
           baseUrl: 'http://localhost:3000',
           token: 'test-token',
-          endpoint: 'all'
+          channels: ['all']
         },
         filterPipeline,
         dedupCache,
@@ -195,7 +195,7 @@ describe('StreamCore Integration Tests', () => {
         {
           baseUrl: 'http://localhost:3000',
           token: 'test-token',
-          endpoint: 'all'
+          channels: ['all']
         },
         filterPipeline,
         dedupCache,
@@ -245,6 +245,233 @@ describe('StreamCore Integration Tests', () => {
       streamCore.stop();
     });
 
+    it('should deduplicate same event with different timestamps', () => {
+      const filterPipeline = new FilterPipeline();
+      dedupCache = new DedupCache();
+      const eventBus = new EventBus();
+      
+      let receivedEvents: TwitterEvent[] = [];
+      eventBus.subscribe('cli', (event) => {
+        receivedEvents.push(event);
+      });
+
+      const streamCore = new StreamCore(
+        {
+          baseUrl: 'http://localhost:3000',
+          token: 'test-token',
+          channels: ['all']
+        },
+        filterPipeline,
+        dedupCache,
+        eventBus
+      );
+
+      const event1: TwitterEvent = {
+        type: 'post_created',
+        timestamp: '2024-01-01T00:00:00.000Z',
+        primaryId: 'tweet123',
+        user: {
+          username: 'testuser',
+          displayName: 'Test User',
+          userId: 'user123'
+        },
+        data: {
+          tweetId: 'tweet123',
+          username: 'testuser',
+          action: 'post_created',
+          tweet: {
+            id: 'tweet123',
+            type: 'tweet',
+            created_at: '2024-01-01T00:00:00.000Z',
+            body: {
+              text: 'Test tweet'
+            },
+            author: {
+              handle: 'testuser',
+              id: 'user123'
+            }
+          }
+        }
+      };
+
+      // Same event but with different timestamp (e.g., received after reconnection)
+      const event2: TwitterEvent = {
+        ...event1,
+        timestamp: '2024-01-01T00:05:00.000Z' // 5 minutes later
+      };
+
+      // Process both events
+      (streamCore as any).handleEvent(event1);
+      (streamCore as any).handleEvent(event2);
+
+      // Only one event should be received (deduplication based on stable ID)
+      expect(receivedEvents).toHaveLength(1);
+      
+      const stats = streamCore.getStats();
+      expect(stats.totalEvents).toBe(2);
+      expect(stats.deliveredEvents).toBe(1);
+      expect(stats.dedupedEvents).toBe(1);
+
+      streamCore.stop();
+    });
+
+    it('should use stable tweet ID for post events', () => {
+      const filterPipeline = new FilterPipeline();
+      dedupCache = new DedupCache();
+      const eventBus = new EventBus();
+      
+      let receivedEvents: TwitterEvent[] = [];
+      eventBus.subscribe('cli', (event) => {
+        receivedEvents.push(event);
+      });
+
+      const streamCore = new StreamCore(
+        {
+          baseUrl: 'http://localhost:3000',
+          token: 'test-token',
+          channels: ['all']
+        },
+        filterPipeline,
+        dedupCache,
+        eventBus
+      );
+
+      // Two different events with different tweet IDs should both be delivered
+      const event1: TwitterEvent = {
+        type: 'post_created',
+        timestamp: '2024-01-01T00:00:00.000Z',
+        primaryId: 'tweet123',
+        user: {
+          username: 'testuser',
+          displayName: 'Test User',
+          userId: 'user123'
+        },
+        data: {
+          tweetId: 'tweet123',
+          username: 'testuser',
+          action: 'post_created',
+          tweet: {
+            id: 'tweet123',
+            type: 'tweet',
+            created_at: '2024-01-01T00:00:00.000Z',
+            body: {
+              text: 'Test tweet 1'
+            },
+            author: {
+              handle: 'testuser',
+              id: 'user123'
+            }
+          }
+        }
+      };
+
+      const event2: TwitterEvent = {
+        type: 'post_created',
+        timestamp: '2024-01-01T00:01:00.000Z',
+        primaryId: 'tweet456',
+        user: {
+          username: 'testuser',
+          displayName: 'Test User',
+          userId: 'user123'
+        },
+        data: {
+          tweetId: 'tweet456',
+          username: 'testuser',
+          action: 'post_created',
+          tweet: {
+            id: 'tweet456',
+            type: 'tweet',
+            created_at: '2024-01-01T00:01:00.000Z',
+            body: {
+              text: 'Test tweet 2'
+            },
+            author: {
+              handle: 'testuser',
+              id: 'user123'
+            }
+          }
+        }
+      };
+
+      // Process both events
+      (streamCore as any).handleEvent(event1);
+      (streamCore as any).handleEvent(event2);
+
+      // Both events should be received (different stable IDs)
+      expect(receivedEvents).toHaveLength(2);
+      
+      const stats = streamCore.getStats();
+      expect(stats.totalEvents).toBe(2);
+      expect(stats.deliveredEvents).toBe(2);
+      expect(stats.dedupedEvents).toBe(0);
+
+      streamCore.stop();
+    });
+
+    it('should use stable user ID for user events', () => {
+      const filterPipeline = new FilterPipeline();
+      dedupCache = new DedupCache();
+      const eventBus = new EventBus();
+      
+      let receivedEvents: TwitterEvent[] = [];
+      eventBus.subscribe('cli', (event) => {
+        receivedEvents.push(event);
+      });
+
+      const streamCore = new StreamCore(
+        {
+          baseUrl: 'http://localhost:3000',
+          token: 'test-token',
+          channels: ['all']
+        },
+        filterPipeline,
+        dedupCache,
+        eventBus
+      );
+
+      const event1: TwitterEvent = {
+        type: 'user_updated',
+        timestamp: '2024-01-01T00:00:00.000Z',
+        primaryId: 'user123',
+        user: {
+          username: 'testuser',
+          displayName: 'Test User',
+          userId: 'user123'
+        },
+        data: {
+          username: 'testuser',
+          action: 'user_update',
+          user: {
+            id: 'user123',
+            handle: 'testuser',
+            profile: {
+              name: 'Test User'
+            }
+          }
+        }
+      };
+
+      // Same user update but received at different time
+      const event2: TwitterEvent = {
+        ...event1,
+        timestamp: '2024-01-01T00:05:00.000Z'
+      };
+
+      // Process both events
+      (streamCore as any).handleEvent(event1);
+      (streamCore as any).handleEvent(event2);
+
+      // Only one event should be received (same stable user ID)
+      expect(receivedEvents).toHaveLength(1);
+      
+      const stats = streamCore.getStats();
+      expect(stats.totalEvents).toBe(2);
+      expect(stats.deliveredEvents).toBe(1);
+      expect(stats.dedupedEvents).toBe(1);
+
+      streamCore.stop();
+    });
+
     it('should broadcast to multiple channels', async () => {
       const filterPipeline = new FilterPipeline();
       dedupCache = new DedupCache();
@@ -262,7 +489,7 @@ describe('StreamCore Integration Tests', () => {
         {
           baseUrl: 'http://localhost:3000',
           token: 'test-token',
-          endpoint: 'all'
+          channels: ['all']
         },
         filterPipeline,
         dedupCache,
@@ -312,8 +539,8 @@ describe('StreamCore Integration Tests', () => {
     });
   });
 
-  describe('Endpoint management', () => {
-    it('should initialize with correct endpoint', () => {
+  describe('Channel management', () => {
+    it('should initialize with correct channels', () => {
       const filterPipeline = new FilterPipeline();
       dedupCache = new DedupCache();
       const eventBus = new EventBus();
@@ -322,14 +549,14 @@ describe('StreamCore Integration Tests', () => {
         {
           baseUrl: 'http://localhost:3000',
           token: 'test-token',
-          endpoint: 'tweets'
+          channels: ['tweets']
         },
         filterPipeline,
         dedupCache,
         eventBus
       );
 
-      expect(streamCore.getCurrentEndpoint()).toBe('tweets');
+      expect(streamCore.getChannels()).toEqual(['tweets']);
       expect(streamCore.getConnectionStatus()).toBe('disconnected');
 
       streamCore.stop();
@@ -344,7 +571,7 @@ describe('StreamCore Integration Tests', () => {
         {
           baseUrl: 'http://localhost:3000',
           token: 'test-token',
-          endpoint: 'all'
+          channels: ['all']
         },
         filterPipeline,
         dedupCache,
@@ -368,7 +595,7 @@ describe('StreamCore Integration Tests', () => {
         {
           baseUrl: 'http://localhost:3000',
           token: 'test-token',
-          endpoint: 'all'
+          channels: ['all']
         },
         filterPipeline,
         dedupCache,
@@ -460,7 +687,7 @@ describe('StreamCore Integration Tests', () => {
         {
           baseUrl: 'http://localhost:3000',
           token: 'test-token',
-          endpoint: 'all'
+          channels: ['all']
         },
         filterPipeline,
         dedupCache,
@@ -523,7 +750,7 @@ describe('StreamCore Integration Tests', () => {
   });
 
   describe('User filtering integration', () => {
-    it('should pass user filters to SSEClient when configured', () => {
+    it('should pass user filters to WSSClient when configured', () => {
       const filterPipeline = new FilterPipeline();
       dedupCache = new DedupCache();
       const eventBus = new EventBus();
@@ -532,7 +759,7 @@ describe('StreamCore Integration Tests', () => {
         {
           baseUrl: 'http://localhost:3000',
           token: 'test-token',
-          endpoint: 'all',
+          channels: ['all'],
           userFilters: ['elonmusk', 'vitalikbuterin']
         },
         filterPipeline,
@@ -556,7 +783,7 @@ describe('StreamCore Integration Tests', () => {
         {
           baseUrl: 'http://localhost:3000',
           token: 'test-token',
-          endpoint: 'all'
+          channels: ['all']
         },
         filterPipeline,
         dedupCache,
@@ -579,7 +806,7 @@ describe('StreamCore Integration Tests', () => {
         {
           baseUrl: 'http://localhost:3000',
           token: 'test-token',
-          endpoint: 'all',
+          channels: ['all'],
           userFilters: []
         },
         filterPipeline,
@@ -612,7 +839,7 @@ describe('StreamCore Integration Tests', () => {
         {
           baseUrl: 'http://localhost:3000',
           token: 'test-token',
-          endpoint: 'all'
+          channels: ['all']
         },
         filterPipeline,
         dedupCache,
@@ -673,7 +900,7 @@ describe('StreamCore Integration Tests', () => {
         {
           baseUrl: 'http://localhost:3000',
           token: 'test-token',
-          endpoint: 'all'
+          channels: ['all']
         },
         filterPipeline,
         dedupCache,
@@ -730,7 +957,7 @@ describe('StreamCore Integration Tests', () => {
         {
           baseUrl: 'http://localhost:3000',
           token: 'test-token',
-          endpoint: 'all'
+          channels: ['all']
         },
         filterPipeline,
         dedupCache,
@@ -774,7 +1001,7 @@ describe('StreamCore Integration Tests', () => {
         {
           baseUrl: 'http://localhost:3000',
           token: 'test-token',
-          endpoint: 'all'
+          channels: ['all']
         },
         filterPipeline,
         dedupCache,
@@ -814,7 +1041,7 @@ describe('StreamCore Integration Tests', () => {
         {
           baseUrl: 'http://localhost:3000',
           token: 'test-token',
-          endpoint: 'all'
+          channels: ['all']
         },
         filterPipeline,
         dedupCache,
@@ -857,7 +1084,7 @@ describe('StreamCore Integration Tests', () => {
         {
           baseUrl: 'http://localhost:3000',
           token: 'test-token',
-          endpoint: 'all'
+          channels: ['all']
         },
         filterPipeline,
         dedupCache,
@@ -920,7 +1147,7 @@ describe('StreamCore Integration Tests', () => {
         {
           baseUrl: 'http://localhost:3000',
           token: 'test-token',
-          endpoint: 'all'
+          channels: ['all']
         },
         filterPipeline,
         dedupCache,
@@ -966,7 +1193,7 @@ describe('StreamCore Integration Tests', () => {
         {
           baseUrl: 'http://localhost:3000',
           token: 'test-token',
-          endpoint: 'all'
+          channels: ['all']
         },
         filterPipeline,
         dedupCache,
@@ -1046,7 +1273,7 @@ describe('StreamCore Integration Tests', () => {
         {
           baseUrl: 'http://localhost:3000',
           token: 'test-token',
-          endpoint: 'all'
+          channels: ['all']
         },
         filterPipeline,
         dedupCache,
@@ -1098,7 +1325,7 @@ describe('StreamCore Integration Tests', () => {
         {
           baseUrl: 'http://localhost:3000',
           token: 'test-token',
-          endpoint: 'all'
+          channels: ['all']
         },
         filterPipeline,
         dedupCache,
@@ -1141,3 +1368,4 @@ describe('StreamCore Integration Tests', () => {
       dedupCache.clear();
     });
   });
+

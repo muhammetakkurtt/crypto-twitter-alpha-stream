@@ -1,9 +1,10 @@
-/**
+﻿/**
  * Property-based tests for StreamCore
  */
 
 import * as fc from 'fast-check';
-import { StreamCore, EndpointType } from '../../src/streamcore/StreamCore';
+import { StreamCore } from '../../src/streamcore/StreamCore';
+import { Channel } from '../../src/ws/WSSClient';
 import { FilterPipeline } from '../../src/filters/FilterPipeline';
 import { DedupCache } from '../../src/dedup/DedupCache';
 import { EventBus } from '../../src/eventbus/EventBus';
@@ -11,17 +12,17 @@ import { EventBus } from '../../src/eventbus/EventBus';
 describe('StreamCore Property Tests', () => {
   
   /**
-   * For any valid endpoint name from the set {all, tweets, following, profile},
-   * the Stream Core should successfully establish a connection to that endpoint.
+   * For any valid channel name from the set {all, tweets, following, profile},
+   * the Stream Core should successfully establish a connection with that channel.
    */
-  describe('Property 3: Endpoint Support Completeness', () => {
-    it('should support all valid endpoint types', async () => {
-      const validEndpoints: EndpointType[] = ['all', 'tweets', 'following', 'profile'];
+  describe('Property 3: Channel Support Completeness', () => {
+    it('should support all valid channel types', async () => {
+      const validChannels: Channel[] = ['all', 'tweets', 'following', 'profile'];
       
       await fc.assert(
         fc.asyncProperty(
-          fc.constantFrom(...validEndpoints),
-          async (endpoint) => {
+          fc.constantFrom(...validChannels),
+          async (channel) => {
             const filterPipeline = new FilterPipeline();
             const dedupCache = new DedupCache();
             const eventBus = new EventBus();
@@ -30,7 +31,7 @@ describe('StreamCore Property Tests', () => {
               {
                 baseUrl: 'http://localhost:3000',
                 token: 'test-token',
-                endpoint: endpoint,
+                channels: [channel],
                 reconnectDelay: 100,
                 maxReconnectDelay: 1000,
                 reconnectBackoffMultiplier: 2.0,
@@ -41,8 +42,8 @@ describe('StreamCore Property Tests', () => {
               eventBus
             );
 
-            // Verify the endpoint is set correctly
-            expect(streamCore.getCurrentEndpoint()).toBe(endpoint);
+            // Verify the channels are set correctly
+            expect(streamCore.getChannels()).toEqual([channel]);
             
             // Verify initial status is disconnected
             expect(streamCore.getConnectionStatus()).toBe('disconnected');
@@ -51,66 +52,17 @@ describe('StreamCore Property Tests', () => {
             streamCore.stop();
           }
         ),
-        { numRuns: 100 }
+        { numRuns: 1000 }
       );
     });
 
-    it('should generate correct endpoint URLs for all valid endpoints', () => {
-      const validEndpoints: EndpointType[] = ['all', 'tweets', 'following', 'profile'];
-      const expectedPaths: Record<EndpointType, string> = {
-        'all': '/events/twitter/all',
-        'tweets': '/events/twitter/tweets',
-        'following': '/events/twitter/following',
-        'profile': '/events/twitter/profile'
-      };
+    it('should support multiple channels simultaneously', () => {
+      const validChannels: Channel[] = ['all', 'tweets', 'following', 'profile'];
 
       fc.assert(
         fc.property(
-          fc.constantFrom(...validEndpoints),
-          fc.webUrl(),
-          (endpoint, baseUrl) => {
-            const filterPipeline = new FilterPipeline();
-            const dedupCache = new DedupCache();
-            const eventBus = new EventBus();
-            
-            const streamCore = new StreamCore(
-              {
-                baseUrl: baseUrl,
-                token: 'test-token',
-                endpoint: endpoint
-              },
-              filterPipeline,
-              dedupCache,
-              eventBus
-            );
-
-            // Verify endpoint is correctly set
-            expect(streamCore.getCurrentEndpoint()).toBe(endpoint);
-            
-            // The endpoint URL should contain the expected path
-            const expectedPath = expectedPaths[endpoint];
-            expect(expectedPath).toBeDefined();
-            
-            streamCore.stop();
-          }
-        ),
-        { numRuns: 100 }
-      );
-    });
-  });
-
-  /**
-   * For any selected endpoint, the Stream Core should maintain exactly one active
-   * connection to that endpoint and zero connections to other endpoints.
-   */
-  describe('Property 4: Exclusive Endpoint Connection', () => {
-    it('should maintain exactly one active endpoint at a time', () => {
-      const validEndpoints: EndpointType[] = ['all', 'tweets', 'following', 'profile'];
-      
-      fc.assert(
-        fc.property(
-          fc.constantFrom(...validEndpoints),
-          (endpoint) => {
+          fc.subarray(validChannels, { minLength: 1, maxLength: 4 }),
+          (channels) => {
             const filterPipeline = new FilterPipeline();
             const dedupCache = new DedupCache();
             const eventBus = new EventBus();
@@ -119,156 +71,20 @@ describe('StreamCore Property Tests', () => {
               {
                 baseUrl: 'http://localhost:3000',
                 token: 'test-token',
-                endpoint: endpoint
+                channels: channels
               },
               filterPipeline,
               dedupCache,
               eventBus
             );
 
-            // Verify exactly one endpoint is active (the configured one)
-            const currentEndpoint = streamCore.getCurrentEndpoint();
-            expect(currentEndpoint).toBe(endpoint);
-            
-            // Verify only one endpoint is set
-            const allEndpoints = validEndpoints.filter(e => e !== endpoint);
-            for (const otherEndpoint of allEndpoints) {
-              // Current endpoint should not be any of the other endpoints
-              expect(currentEndpoint).not.toBe(otherEndpoint);
-            }
+            // Verify channels are correctly set
+            expect(streamCore.getChannels()).toEqual(channels);
             
             streamCore.stop();
           }
         ),
-        { numRuns: 100 }
-      );
-    });
-
-    it('should have zero connections to non-selected endpoints', () => {
-      const validEndpoints: EndpointType[] = ['all', 'tweets', 'following', 'profile'];
-      
-      fc.assert(
-        fc.property(
-          fc.constantFrom(...validEndpoints),
-          (selectedEndpoint) => {
-            const filterPipeline = new FilterPipeline();
-            const dedupCache = new DedupCache();
-            const eventBus = new EventBus();
-            
-            const streamCore = new StreamCore(
-              {
-                baseUrl: 'http://localhost:3000',
-                token: 'test-token',
-                endpoint: selectedEndpoint
-              },
-              filterPipeline,
-              dedupCache,
-              eventBus
-            );
-
-            // The current endpoint should be exactly the selected one
-            expect(streamCore.getCurrentEndpoint()).toBe(selectedEndpoint);
-            
-            // Count how many endpoints match (should be exactly 1)
-            const matchCount = validEndpoints.filter(
-              e => e === streamCore.getCurrentEndpoint()
-            ).length;
-            expect(matchCount).toBe(1);
-            
-            streamCore.stop();
-          }
-        ),
-        { numRuns: 100 }
-      );
-    });
-  });
-
-  /**
-   * For any two different endpoints A and B, switching from A to B should result
-   * in disconnection from A and connection to B with no overlap period.
-   */
-  describe('Property 5: Endpoint Switching Cleanup', () => {
-    it('should disconnect from old endpoint when switching to new endpoint', () => {
-      const validEndpoints: EndpointType[] = ['all', 'tweets', 'following', 'profile'];
-      
-      fc.assert(
-        fc.property(
-          fc.constantFrom(...validEndpoints),
-          fc.constantFrom(...validEndpoints),
-          (endpointA, endpointB) => {
-            // Only test when endpoints are different
-            fc.pre(endpointA !== endpointB);
-            
-            const filterPipeline = new FilterPipeline();
-            const dedupCache = new DedupCache();
-            const eventBus = new EventBus();
-            
-            const streamCore = new StreamCore(
-              {
-                baseUrl: 'http://localhost:3000',
-                token: 'test-token',
-                endpoint: endpointA
-              },
-              filterPipeline,
-              dedupCache,
-              eventBus
-            );
-
-            // Verify initial endpoint is A
-            expect(streamCore.getCurrentEndpoint()).toBe(endpointA);
-            
-            // Note: We can't actually call switchEndpoint without mocking EventSource
-            // But we can verify the endpoint switching logic by checking the state
-            // The actual connection behavior is tested in integration tests
-            
-            // Verify that the endpoint is correctly set
-            expect(streamCore.getCurrentEndpoint()).toBe(endpointA);
-            expect(streamCore.getCurrentEndpoint()).not.toBe(endpointB);
-            
-            streamCore.stop();
-          }
-        ),
-        { numRuns: 100 }
-      );
-    });
-
-    it('should update current endpoint when switchEndpoint is called', () => {
-      const validEndpoints: EndpointType[] = ['all', 'tweets', 'following', 'profile'];
-      
-      fc.assert(
-        fc.property(
-          fc.constantFrom(...validEndpoints),
-          fc.constantFrom(...validEndpoints),
-          (endpointA, endpointB) => {
-            // Only test when endpoints are different
-            fc.pre(endpointA !== endpointB);
-            
-            const filterPipeline = new FilterPipeline();
-            const dedupCache = new DedupCache();
-            const eventBus = new EventBus();
-            
-            const streamCore = new StreamCore(
-              {
-                baseUrl: 'http://localhost:3000',
-                token: 'test-token',
-                endpoint: endpointA
-              },
-              filterPipeline,
-              dedupCache,
-              eventBus
-            );
-
-            // Verify initial endpoint is A
-            const initialEndpoint = streamCore.getCurrentEndpoint();
-            expect(initialEndpoint).toBe(endpointA);
-            
-            // Verify that only one endpoint is active at a time
-            expect(initialEndpoint).not.toBe(endpointB);
-            
-            streamCore.stop();
-          }
-        ),
-        { numRuns: 100 }
+        { numRuns: 1000 }
       );
     });
   });
@@ -304,7 +120,7 @@ describe('StreamCore Property Tests', () => {
               {
                 baseUrl: 'http://localhost:3000',
                 token: 'test-token',
-                endpoint: 'all',
+                channels: ['all'],
                 dedupTTL: 5000
               },
               filterPipeline,
@@ -344,7 +160,7 @@ describe('StreamCore Property Tests', () => {
             dedupCache.clear();
           }
         ),
-        { numRuns: 20 }
+        { numRuns: 100 }
       );
     }, 30000);
 
@@ -374,7 +190,7 @@ describe('StreamCore Property Tests', () => {
               {
                 baseUrl: 'http://localhost:3000',
                 token: 'test-token',
-                endpoint: 'all',
+                channels: ['all'],
                 dedupTTL: 50
               },
               filterPipeline,
@@ -417,14 +233,14 @@ describe('StreamCore Property Tests', () => {
             dedupCache.clear();
           }
         ),
-        { numRuns: 10 }
+        { numRuns: 100 }  // Reduced from 1000 to avoid timeout (100 runs * 80ms = 8s < 30s timeout)
       );
     }, 30000);
   });
 });
 
   /**
-   * For any SSE connection error, the Stream Core should log the error and initiate
+   * For any WebSocket connection error, the Stream Core should log the error and initiate
    * reconnection without terminating the application.
    */
   describe('Property 26: Connection Error Resilience', () => {
@@ -441,7 +257,7 @@ describe('StreamCore Property Tests', () => {
               {
                 baseUrl: 'http://localhost:3000',
                 token: 'test-token',
-                endpoint: 'all'
+                channels: ['all']
               },
               filterPipeline,
               dedupCache,
@@ -458,7 +274,7 @@ describe('StreamCore Property Tests', () => {
             streamCore.stop();
           }
         ),
-        { numRuns: 100 }
+        { numRuns: 1000 }
       );
     });
 
@@ -475,7 +291,7 @@ describe('StreamCore Property Tests', () => {
               {
                 baseUrl: 'http://localhost:3000',
                 token: 'test-token',
-                endpoint: 'all'
+                channels: ['all']
               },
               filterPipeline,
               dedupCache,
@@ -496,7 +312,7 @@ describe('StreamCore Property Tests', () => {
             streamCore.stop();
           }
         ),
-        { numRuns: 100 }
+        { numRuns: 1000 }
       );
     });
   });
@@ -532,7 +348,7 @@ describe('StreamCore Property Tests', () => {
               {
                 baseUrl: 'http://localhost:3000',
                 token: 'test-token',
-                endpoint: 'all'
+                channels: ['all']
               },
               filterPipeline,
               dedupCache,
@@ -575,7 +391,7 @@ describe('StreamCore Property Tests', () => {
             dedupCache.clear();
           }
         ),
-        { numRuns: 100 }
+        { numRuns: 1000 }
       );
     });
   });
@@ -604,7 +420,7 @@ describe('StreamCore Property Tests', () => {
               {
                 baseUrl: 'http://localhost:3000',
                 token: 'test-token',
-                endpoint: 'all'
+                channels: ['all']
               },
               filterPipeline,
               dedupCache,
@@ -624,7 +440,7 @@ describe('StreamCore Property Tests', () => {
             streamCore.stop();
           }
         ),
-        { numRuns: 100 }
+        { numRuns: 1000 }
       );
     });
   });
@@ -659,7 +475,7 @@ describe('StreamCore Property Tests', () => {
               {
                 baseUrl: 'http://localhost:3000',
                 token: 'test-token',
-                endpoint: 'all'
+                channels: ['all']
               },
               filterPipeline,
               dedupCache,
@@ -687,7 +503,7 @@ describe('StreamCore Property Tests', () => {
             dedupCache.clear();
           }
         ),
-        { numRuns: 100 }
+        { numRuns: 1000 }
       );
     });
 
@@ -715,7 +531,7 @@ describe('StreamCore Property Tests', () => {
               {
                 baseUrl: 'http://localhost:3000',
                 token: 'test-token',
-                endpoint: 'all'
+                channels: ['all']
               },
               filterPipeline,
               dedupCache,
@@ -730,7 +546,7 @@ describe('StreamCore Property Tests', () => {
             dedupCache.clear();
           }
         ),
-        { numRuns: 100 }
+        { numRuns: 1000 }
       );
     });
   });
@@ -761,7 +577,7 @@ describe('StreamCore Property Tests', () => {
               {
                 baseUrl: 'http://localhost:3000',
                 token: 'test-token',
-                endpoint: 'all'
+                channels: ['all']
               },
               filterPipeline,
               dedupCache,
@@ -794,7 +610,7 @@ describe('StreamCore Property Tests', () => {
             dedupCache.clear();
           }
         ),
-        { numRuns: 100 }
+        { numRuns: 1000 }
       );
     });
 
@@ -814,7 +630,7 @@ describe('StreamCore Property Tests', () => {
               {
                 baseUrl: 'http://localhost:3000',
                 token: 'test-token',
-                endpoint: 'all'
+                channels: ['all']
               },
               filterPipeline,
               dedupCache,
@@ -838,7 +654,7 @@ describe('StreamCore Property Tests', () => {
             dedupCache.clear();
           }
         ),
-        { numRuns: 100 }
+        { numRuns: 1000 }
       );
     });
   });

@@ -60,7 +60,7 @@ describe('LogSanitizer - Property Tests', () => {
             LogSanitizer.clear();
           }
         ),
-        { numRuns: 100 }
+        { numRuns: 1000 }
       );
     });
 
@@ -90,7 +90,7 @@ describe('LogSanitizer - Property Tests', () => {
             LogSanitizer.clear();
           }
         ),
-        { numRuns: 100 }
+        { numRuns: 1000 }
       );
     });
 
@@ -121,7 +121,7 @@ describe('LogSanitizer - Property Tests', () => {
             LogSanitizer.clear();
           }
         ),
-        { numRuns: 100 }
+        { numRuns: 1000 }
       );
     });
 
@@ -154,7 +154,7 @@ describe('LogSanitizer - Property Tests', () => {
             LogSanitizer.clear();
           }
         ),
-        { numRuns: 100 }
+        { numRuns: 1000 }
       );
     });
 
@@ -188,7 +188,7 @@ describe('LogSanitizer - Property Tests', () => {
             LogSanitizer.clear();
           }
         ),
-        { numRuns: 100 }
+        { numRuns: 1000 }
       );
     });
   });

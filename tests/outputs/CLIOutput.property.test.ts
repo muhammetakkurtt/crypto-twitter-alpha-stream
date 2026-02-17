@@ -130,7 +130,7 @@ describe('CLIOutput Property Tests', () => {
           expect(eventLine).toMatch(/followed|unfollowed/);
         }
       }),
-      { numRuns: 100 }
+      { numRuns: 1000 }
     );
   });
 
@@ -161,7 +161,7 @@ describe('CLIOutput Property Tests', () => {
         expect(eventLine).not.toContain('\n');
         expect(eventLine).not.toContain('\r');
       }),
-      { numRuns: 100 }
+      { numRuns: 1000 }
     );
   });
 
@@ -211,7 +211,7 @@ describe('CLIOutput Property Tests', () => {
           expect(statsLine).toMatch(/rate=\d+\.\d+\/s/);
         }
       ),
-      { numRuns: 100 }
+      { numRuns: 1000 }
     );
   });
 
@@ -279,7 +279,7 @@ describe('CLIOutput Property Tests', () => {
           }
         }
       ),
-      { numRuns: 100 }
+      { numRuns: 1000 }
     );
   });
 
@@ -333,7 +333,7 @@ describe('CLIOutput Property Tests', () => {
           expect(eventLine).toContain('followed'); // Action word
         }
       ),
-      { numRuns: 100 }
+      { numRuns: 1000 }
     );
   });
 
@@ -384,7 +384,7 @@ describe('CLIOutput Property Tests', () => {
           expect(eventLine).toMatch(/profile|updated|pinned/);
         }
       ),
-      { numRuns: 100 }
+      { numRuns: 1000 }
     );
   });
 
@@ -412,7 +412,7 @@ describe('CLIOutput Property Tests', () => {
         const atIndex = eventLine!.indexOf(`@${event.user.username}`);
         expect(atIndex).toBeGreaterThan(-1);
       }),
-      { numRuns: 100 }
+      { numRuns: 1000 }
     );
   });
 
@@ -480,7 +480,7 @@ describe('CLIOutput Property Tests', () => {
           expect(eventLine).toContain(expectedStart.substring(0, 30));
         }
       ),
-      { numRuns: 100 }
+      { numRuns: 1000 }
     );
   });
 
@@ -533,7 +533,7 @@ describe('CLIOutput Property Tests', () => {
           expect(eventLine!.length).toBeGreaterThan(0);
         }
       ),
-      { numRuns: 100 }
+      { numRuns: 1000 }
     );
   });
 });

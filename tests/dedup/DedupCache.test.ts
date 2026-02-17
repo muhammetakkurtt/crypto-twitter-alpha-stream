@@ -175,7 +175,7 @@ describe('DedupCache - Unit Tests', () => {
   });
 
   describe('generateDedupKey', () => {
-    it('should generate key in correct format', () => {
+    it('should generate key in correct format with content hash', () => {
       const event: TwitterEvent = {
         type: 'post_created',
         timestamp: '2024-01-15T10:30:00Z',
@@ -205,7 +205,13 @@ describe('DedupCache - Unit Tests', () => {
       };
 
       const key = generateDedupKey(event);
-      expect(key).toBe('post_created:tweet123:2024-01-15T10:30:00Z');
+      
+      // Key should have format: type:primaryId:contentHash
+      const parts = key.split(':');
+      expect(parts.length).toBe(3);
+      expect(parts[0]).toBe('post_created');
+      expect(parts[1]).toBe('tweet123');
+      expect(parts[2]).toMatch(/^[a-z0-9]+$/); // Content hash
     });
 
     it('should generate different keys for different event types', () => {
@@ -284,7 +290,7 @@ describe('DedupCache - Unit Tests', () => {
       expect(key1).not.toBe(key2);
     });
 
-    it('should generate different keys for different timestamps', () => {
+    it('should generate same keys for same event with different timestamps but same content', () => {
       const baseEvent: TwitterEvent = {
         type: 'post_created',
         timestamp: '2024-01-15T10:30:00Z',
@@ -319,6 +325,76 @@ describe('DedupCache - Unit Tests', () => {
       const key1 = generateDedupKey(event1);
       const key2 = generateDedupKey(event2);
 
+      // Keys should be the same because content is identical
+      // This allows proper deduplication of the same event received at different times
+      expect(key1).toBe(key2);
+    });
+
+    it('should generate different keys for same event with different content', () => {
+      const baseEvent: TwitterEvent = {
+        type: 'post_updated',
+        timestamp: '2024-01-15T10:30:00Z',
+        primaryId: 'id123',
+        user: {
+          username: 'testuser',
+          displayName: 'Test User',
+          userId: 'user123',
+        },
+        data: {
+          tweetId: 'tweet123',
+          username: 'testuser',
+          action: 'post_updated',
+          tweet: {
+            id: 'tweet123',
+            type: 'tweet',
+            created_at: '2024-01-15T10:30:00Z',
+            body: {
+              text: 'Test tweet'
+            },
+            author: {
+              handle: 'testuser',
+              id: 'user123'
+            },
+            metrics: {
+              likes: 10
+            }
+          }
+        },
+      };
+
+      const event1 = { 
+        ...baseEvent,
+        data: JSON.parse(JSON.stringify(baseEvent.data)) // Deep copy
+      };
+      const event2 = { 
+        ...baseEvent, 
+        data: {
+          tweetId: 'tweet123',
+          username: 'testuser',
+          action: 'post_updated',
+          tweet: {
+            id: 'tweet123',
+            type: 'tweet',
+            created_at: '2024-01-15T10:30:00Z',
+            body: {
+              text: 'Test tweet'
+            },
+            author: {
+              handle: 'testuser',
+              id: 'user123'
+            },
+            metrics: {
+              likes: 15 // Different like count
+            }
+          }
+        }
+      };
+
+      const key1 = generateDedupKey(event1);
+      const key2 = generateDedupKey(event2);
+
+      // Keys should be different because content changed
+      // This allows updates with new data to be processed
       expect(key1).not.toBe(key2);
     });
   });

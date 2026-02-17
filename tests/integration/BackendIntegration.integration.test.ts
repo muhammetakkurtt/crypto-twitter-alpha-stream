@@ -1,6 +1,7 @@
 /**
  * Backend Integration Tests
  * Tests the integration between backend and Svelte frontend
+ * Updated for WebSocket (WSS) protocol
  */
 
 import { DashboardOutput } from '../../src/outputs/DashboardOutput';

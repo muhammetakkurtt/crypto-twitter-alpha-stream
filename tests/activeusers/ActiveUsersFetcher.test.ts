@@ -2,20 +2,24 @@
  * Unit tests for ActiveUsersFetcher
  */
 
+import http from 'http';
 import https from 'https';
 import { EventEmitter } from 'events';
 import { ActiveUsersFetcher } from '../../src/activeusers/ActiveUsersFetcher';
 
-// Mock https module
+// Mock http and https modules
+jest.mock('http');
 jest.mock('https');
 
 describe('ActiveUsersFetcher - Unit Tests', () => {
+  let mockHttpGet: jest.Mock;
   let mockHttpsGet: jest.Mock;
   let fetcher: ActiveUsersFetcher | undefined;
 
   beforeEach(() => {
     jest.clearAllMocks();
     jest.useFakeTimers();
+    mockHttpGet = http.get as jest.Mock;
     mockHttpsGet = https.get as jest.Mock;
     fetcher = undefined;
   });
@@ -46,6 +50,96 @@ describe('ActiveUsersFetcher - Unit Tests', () => {
 
     return response;
   }
+
+  describe('URL Conversion', () => {
+    it('should convert ws:// URL to http:// for REST endpoint', async () => {
+      const mockUsers = ['user1', 'user2'];
+
+      mockHttpGet.mockImplementation((url: string, _options: any, callback: Function) => {
+        // Verify the URL was converted from ws:// to http://
+        expect(url).toBe('http://api.example.com/active-users');
+        const response = createMockResponse(200, mockUsers);
+        callback(response);
+        return new EventEmitter();
+      });
+
+      const fetcher = new ActiveUsersFetcher({
+        baseUrl: 'ws://api.example.com',
+        token: 'test-token',
+      });
+
+      const users = await fetcher.fetch();
+      expect(users).toEqual(mockUsers);
+      expect(mockHttpGet).toHaveBeenCalled();
+      expect(mockHttpsGet).not.toHaveBeenCalled();
+    });
+
+    it('should convert wss:// URL to https:// for REST endpoint', async () => {
+      const mockUsers = ['user1', 'user2'];
+
+      mockHttpsGet.mockImplementation((url: string, _options: any, callback: Function) => {
+        // Verify the URL was converted from wss:// to https://
+        expect(url).toBe('https://api.example.com/active-users');
+        const response = createMockResponse(200, mockUsers);
+        callback(response);
+        return new EventEmitter();
+      });
+
+      const fetcher = new ActiveUsersFetcher({
+        baseUrl: 'wss://api.example.com',
+        token: 'test-token',
+      });
+
+      const users = await fetcher.fetch();
+      expect(users).toEqual(mockUsers);
+      expect(mockHttpsGet).toHaveBeenCalled();
+      expect(mockHttpGet).not.toHaveBeenCalled();
+    });
+
+    it('should leave http:// URL unchanged', async () => {
+      const mockUsers = ['user1', 'user2'];
+
+      mockHttpGet.mockImplementation((url: string, _options: any, callback: Function) => {
+        // Verify the URL remains http://
+        expect(url).toBe('http://api.example.com/active-users');
+        const response = createMockResponse(200, mockUsers);
+        callback(response);
+        return new EventEmitter();
+      });
+
+      const fetcher = new ActiveUsersFetcher({
+        baseUrl: 'http://api.example.com',
+        token: 'test-token',
+      });
+
+      const users = await fetcher.fetch();
+      expect(users).toEqual(mockUsers);
+      expect(mockHttpGet).toHaveBeenCalled();
+      expect(mockHttpsGet).not.toHaveBeenCalled();
+    });
+
+    it('should leave https:// URL unchanged', async () => {
+      const mockUsers = ['user1', 'user2'];
+
+      mockHttpsGet.mockImplementation((url: string, _options: any, callback: Function) => {
+        // Verify the URL remains https://
+        expect(url).toBe('https://api.example.com/active-users');
+        const response = createMockResponse(200, mockUsers);
+        callback(response);
+        return new EventEmitter();
+      });
+
+      const fetcher = new ActiveUsersFetcher({
+        baseUrl: 'https://api.example.com',
+        token: 'test-token',
+      });
+
+      const users = await fetcher.fetch();
+      expect(users).toEqual(mockUsers);
+      expect(mockHttpsGet).toHaveBeenCalled();
+      expect(mockHttpGet).not.toHaveBeenCalled();
+    });
+  });
 
   describe('Fetch and Cache', () => {
     it('should fetch users from /active-users endpoint', async () => {

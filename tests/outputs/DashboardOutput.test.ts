@@ -168,7 +168,7 @@ describe('DashboardOutput', () => {
       const customHealthStatus: HealthStatus = {
         connection: {
           status: 'connected',
-          endpoint: '/events/twitter/all',
+          channels: ['all'],
           uptime: 3600
         },
         events: {
@@ -290,6 +290,123 @@ describe('DashboardOutput', () => {
     it('should maintain start time', () => {
       const state = dashboard.getState();
       expect(state.stats.startTime).toBeInstanceOf(Date);
+    });
+  });
+
+  describe('Unknown event type handling', () => {
+    it('should handle event with unknown type gracefully', () => {
+      const mockEvent = createTestPostEvent('tweet123', 'Test tweet');
+      // Cast to any to bypass TypeScript type checking for testing purposes
+      (mockEvent as any).type = 'unknown_event_type';
+
+      // Should not throw
+      expect(() => dashboard.handleEvent(mockEvent as any)).not.toThrow();
+
+      const state = dashboard.getState();
+      // Event should still be added to events buffer
+      expect(state.events).toHaveLength(1);
+      expect(state.stats.total).toBe(1);
+      expect(state.stats.delivered).toBe(1);
+      
+      // Unknown type should be tracked separately
+      expect(state.unknownEventTypes['unknown_event_type']).toBe(1);
+      
+      // Known event type counters should not be affected
+      expect(state.stats.byType.post_created).toBe(0);
+    });
+
+    it('should handle statistics display with mixed known and unknown types', () => {
+      // Add known event types
+      const knownEvent1 = createTestPostEvent('tweet1', 'Test 1');
+      knownEvent1.type = 'post_created';
+      dashboard.handleEvent(knownEvent1);
+
+      const knownEvent2 = createTestPostEvent('tweet2', 'Test 2');
+      knownEvent2.type = 'follow_created';
+      dashboard.handleEvent(knownEvent2);
+
+      // Add unknown event types
+      const unknownEvent1 = createTestPostEvent('tweet3', 'Test 3');
+      (unknownEvent1 as any).type = 'legacy_event_type';
+      dashboard.handleEvent(unknownEvent1 as any);
+
+      const unknownEvent2 = createTestPostEvent('tweet4', 'Test 4');
+      (unknownEvent2 as any).type = 'future_event_type';
+      dashboard.handleEvent(unknownEvent2 as any);
+
+      const unknownEvent3 = createTestPostEvent('tweet5', 'Test 5');
+      (unknownEvent3 as any).type = 'legacy_event_type';
+      dashboard.handleEvent(unknownEvent3 as any);
+
+      const state = dashboard.getState();
+      
+      // Verify total stats
+      expect(state.stats.total).toBe(5);
+      expect(state.stats.delivered).toBe(5);
+      
+      // Verify known event types are tracked correctly
+      expect(state.stats.byType.post_created).toBe(1);
+      expect(state.stats.byType.follow_created).toBe(1);
+      
+      // Verify unknown event types are tracked separately
+      expect(state.unknownEventTypes['legacy_event_type']).toBe(2);
+      expect(state.unknownEventTypes['future_event_type']).toBe(1);
+      
+      // Verify all events are in the buffer
+      expect(state.events).toHaveLength(5);
+    });
+
+    it('should continue functioning after receiving unknown event type', () => {
+      // Process unknown event
+      const unknownEvent = createTestPostEvent('tweet1', 'Unknown');
+      (unknownEvent as any).type = 'unknown_type';
+      dashboard.handleEvent(unknownEvent as any);
+
+      // Process known event after unknown
+      const knownEvent = createTestPostEvent('tweet2', 'Known');
+      knownEvent.type = 'post_created';
+      dashboard.handleEvent(knownEvent);
+
+      const state = dashboard.getState();
+      
+      // Both events should be processed
+      expect(state.stats.total).toBe(2);
+      expect(state.events).toHaveLength(2);
+      
+      // Known event should be tracked correctly
+      expect(state.stats.byType.post_created).toBe(1);
+      
+      // Unknown event should be tracked separately
+      expect(state.unknownEventTypes['unknown_type']).toBe(1);
+      
+      // Dashboard should still be functional
+      expect(state.connectionStatus).toBeDefined();
+      expect(state.filters).toBeDefined();
+    });
+
+    it('should log warning for first occurrence of unknown event type', () => {
+      const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation();
+
+      const unknownEvent1 = createTestPostEvent('tweet1', 'Test 1');
+      (unknownEvent1 as any).type = 'new_unknown_type';
+      dashboard.handleEvent(unknownEvent1 as any);
+
+      // Should log warning for first occurrence
+      expect(consoleWarnSpy).toHaveBeenCalledWith(
+        '[DashboardOutput] Unknown event type received: new_unknown_type'
+      );
+
+      consoleWarnSpy.mockClear();
+
+      // Process same unknown type again
+      const unknownEvent2 = createTestPostEvent('tweet2', 'Test 2');
+      (unknownEvent2 as any).type = 'new_unknown_type';
+      dashboard.handleEvent(unknownEvent2 as any);
+
+      // Should not log warning for subsequent occurrences
+      expect(consoleWarnSpy).not.toHaveBeenCalled();
+
+      consoleWarnSpy.mockRestore();
     });
   });
 

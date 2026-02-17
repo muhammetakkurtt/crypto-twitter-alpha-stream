@@ -63,7 +63,14 @@ describe('Security Measures - Unit Tests', () => {
     });
 
     it('should reject placeholder token values', () => {
-      const placeholders = ['your-token-here', 'example-token', 'placeholder-token'];
+      // Test exact placeholder matches and obvious patterns that will be rejected
+      const placeholders = [
+        'your-token-here',      // Starts with "your"
+        'placeholder',          // Exact match
+        'your_token_here',      // Starts with "your"
+        'example_token',        // Exact match
+        'test_token'            // Exact match
+      ];
       
       for (const placeholder of placeholders) {
         process.env.APIFY_TOKEN = placeholder;
@@ -72,6 +79,24 @@ describe('Security Measures - Unit Tests', () => {
         const configManager = new ConfigManager('nonexistent.json', true);
         
         expect(() => configManager.load()).toThrow('Invalid APIFY_TOKEN: Token appears to be a placeholder value');
+      }
+    });
+    
+    it('should accept real tokens that contain common words', () => {
+      // These should be accepted - they're real tokens that happen to contain "test" or "example"
+      const realTokens = [
+        'apify_api_mytesttoken_abc123',
+        'sk_test_abc123def456',
+        'real_token_with_test_in_name'
+      ];
+      
+      for (const token of realTokens) {
+        process.env.APIFY_TOKEN = token;
+        process.env.APIFY_ACTOR_URL = 'https://test-actor.apify.actor';
+        
+        const configManager = new ConfigManager('nonexistent.json', true);
+        
+        expect(() => configManager.load()).not.toThrow();
       }
     });
 
@@ -108,7 +133,7 @@ describe('Security Measures - Unit Tests', () => {
       const testConfig = {
         apify: {
           token: 'token-from-file-should-be-ignored',
-          endpoint: 'all'
+          channels: ['all']
         }
       };
       
@@ -128,7 +153,7 @@ describe('Security Measures - Unit Tests', () => {
       const testConfig = {
         apify: {
           token: 'token-from-file',
-          endpoint: 'all'
+          channels: ['all']
         }
       };
       
@@ -233,6 +258,156 @@ describe('Security Measures - Unit Tests', () => {
       message = `Token: ${token}`;
       sanitized = LogSanitizer.sanitize(message);
       expect(sanitized).toContain(token);
+    });
+
+    it('should sanitize error objects', () => {
+      const token = 'secret_token_12345';
+      LogSanitizer.registerSensitiveValue(token);
+      
+      const error = new Error(`Authentication failed with token: ${token}`);
+      const sanitized = LogSanitizer.sanitizeAny(error);
+      
+      expect(sanitized.name).toBe('Error');
+      expect(sanitized.message).not.toContain(token);
+      expect(sanitized.message).toContain('[REDACTED]');
+      expect(sanitized.stack).not.toContain(token);
+    });
+
+    it('should sanitize nested objects', () => {
+      const token = 'secret_api_key';
+      LogSanitizer.registerSensitiveValue(token);
+      
+      const obj = {
+        config: {
+          auth: {
+            apiKey: token,
+            endpoint: 'https://api.example.com'
+          }
+        },
+        metadata: {
+          user: 'testuser'
+        }
+      };
+      
+      const sanitized = LogSanitizer.sanitizeAny(obj);
+      
+      expect(sanitized.config.auth.apiKey).not.toContain(token);
+      expect(sanitized.config.auth.apiKey).toBe('[REDACTED]');
+      expect(sanitized.config.auth.endpoint).toBe('https://api.example.com');
+      expect(sanitized.metadata.user).toBe('testuser');
+    });
+
+    it('should sanitize arrays', () => {
+      const token = 'secret_token';
+      LogSanitizer.registerSensitiveValue(token);
+      
+      const arr = [
+        `Token: ${token}`,
+        'Normal message',
+        { key: token },
+        [token, 'nested']
+      ];
+      
+      const sanitized = LogSanitizer.sanitizeAny(arr);
+      
+      expect(sanitized[0]).not.toContain(token);
+      expect(sanitized[0]).toContain('[REDACTED]');
+      expect(sanitized[1]).toBe('Normal message');
+      expect(sanitized[2].key).toBe('[REDACTED]');
+      expect(sanitized[3][0]).toBe('[REDACTED]');
+      expect(sanitized[3][1]).toBe('nested');
+    });
+
+    it('should handle circular references safely', () => {
+      const token = 'secret_token';
+      LogSanitizer.registerSensitiveValue(token);
+      
+      const obj: any = {
+        name: 'test',
+        token: token
+      };
+      obj.self = obj; // Create circular reference
+      
+      const sanitized = LogSanitizer.sanitizeAny(obj);
+      
+      expect(sanitized.name).toBe('test');
+      expect(sanitized.token).toBe('[REDACTED]');
+      expect(sanitized.self).toBe('[Circular]');
+    });
+
+    it('should sanitize error objects with custom properties', () => {
+      const token = 'secret_token';
+      LogSanitizer.registerSensitiveValue(token);
+      
+      const error: any = new Error('Test error');
+      error.token = token;
+      error.config = { apiKey: token };
+      
+      const sanitized = LogSanitizer.sanitizeAny(error);
+      
+      expect(sanitized.message).toBe('Test error');
+      expect(sanitized.token).toBe('[REDACTED]');
+      expect(sanitized.config.apiKey).toBe('[REDACTED]');
+    });
+
+    it('should handle functions in objects', () => {
+      const obj = {
+        name: 'test',
+        callback: () => console.log('test')
+      };
+      
+      const sanitized = LogSanitizer.sanitizeAny(obj);
+      
+      expect(sanitized.name).toBe('test');
+      expect(sanitized.callback).toBe('[Function]');
+    });
+
+    it('should handle symbols in objects', () => {
+      const sym = Symbol('test');
+      const obj = {
+        name: 'test',
+        symbol: sym
+      };
+      
+      const sanitized = LogSanitizer.sanitizeAny(obj);
+      
+      expect(sanitized.name).toBe('test');
+      expect(sanitized.symbol).toBe(sym.toString());
+    });
+
+    it('should handle null and undefined values', () => {
+      const obj = {
+        nullValue: null,
+        undefinedValue: undefined,
+        normalValue: 'test'
+      };
+      
+      const sanitized = LogSanitizer.sanitizeAny(obj);
+      
+      expect(sanitized.nullValue).toBeNull();
+      expect(sanitized.undefinedValue).toBeUndefined();
+      expect(sanitized.normalValue).toBe('test');
+    });
+
+    it('should sanitize deeply nested circular structures', () => {
+      const token = 'secret_token';
+      LogSanitizer.registerSensitiveValue(token);
+      
+      const obj: any = {
+        level1: {
+          token: token,
+          level2: {
+            data: 'test'
+          }
+        }
+      };
+      obj.level1.level2.parent = obj.level1; // Create circular reference
+      
+      const sanitized = LogSanitizer.sanitizeAny(obj);
+      
+      expect(sanitized.level1.token).toBe('[REDACTED]');
+      expect(sanitized.level1.level2.data).toBe('test');
+      expect(sanitized.level1.level2.parent).toBe('[Circular]');
     });
 
     it('should register all sensitive values from config', () => {
@@ -362,6 +537,172 @@ describe('Security Measures - Unit Tests', () => {
       
       // Environment variable should override config file
       expect(config.logging.fileLogging).toBe(false);
+    });
+  });
+
+  describe('Console Wrapping Idempotency', () => {
+    let originalConsoleLog: typeof console.log;
+    let originalConsoleWarn: typeof console.warn;
+    let originalConsoleError: typeof console.error;
+    let originalConsoleInfo: typeof console.info;
+
+    beforeEach(() => {
+      // Save original console methods before any wrapping
+      originalConsoleLog = console.log;
+      originalConsoleWarn = console.warn;
+      originalConsoleError = console.error;
+      originalConsoleInfo = console.info;
+
+      // Reset the wrapped flag for testing
+      // @ts-ignore - accessing private static field for testing
+      LogSanitizer.isConsoleWrapped = false;
+    });
+
+    afterEach(() => {
+      // Restore original console methods
+      console.log = originalConsoleLog;
+      console.warn = originalConsoleWarn;
+      console.error = originalConsoleError;
+      console.info = originalConsoleInfo;
+
+      // Reset the wrapped flag
+      // @ts-ignore - accessing private static field for testing
+      LogSanitizer.isConsoleWrapped = false;
+    });
+
+    it('should wrap console methods on first call', () => {
+      const token = 'secret_token_12345';
+      LogSanitizer.registerSensitiveValue(token);
+
+      // Mock console.log to capture output
+      const mockLog = jest.fn();
+      console.log = mockLog;
+
+      // Wrap console
+      LogSanitizer.wrapConsole();
+
+      // Call console.log
+      console.log(`Token: ${token}`);
+      
+      // Should have been called with sanitized output
+      expect(mockLog).toHaveBeenCalled();
+      expect(mockLog.mock.calls[0][0]).toContain('[REDACTED]');
+      expect(mockLog.mock.calls[0][0]).not.toContain(token);
+    });
+
+    it('should not wrap console methods multiple times', () => {
+      const token = 'secret_token_12345';
+      LogSanitizer.registerSensitiveValue(token);
+
+      // Wrap console multiple times
+      LogSanitizer.wrapConsole();
+      const firstWrappedLog = console.log;
+      
+      LogSanitizer.wrapConsole();
+      const secondWrappedLog = console.log;
+      
+      LogSanitizer.wrapConsole();
+      const thirdWrappedLog = console.log;
+
+      // All should be the same reference (not re-wrapped)
+      expect(firstWrappedLog).toBe(secondWrappedLog);
+      expect(secondWrappedLog).toBe(thirdWrappedLog);
+    });
+
+    it('should maintain sanitization after multiple wrap calls', () => {
+      const token = 'secret_token_12345';
+      LogSanitizer.registerSensitiveValue(token);
+
+      // Mock console.log to capture output
+      const mockLog = jest.fn();
+      console.log = mockLog;
+
+      // Wrap console multiple times
+      LogSanitizer.wrapConsole();
+      LogSanitizer.wrapConsole();
+      LogSanitizer.wrapConsole();
+
+      // Call console.log
+      console.log(`Token: ${token}`);
+      
+      // Should still sanitize correctly
+      expect(mockLog).toHaveBeenCalled();
+      expect(mockLog.mock.calls[0][0]).toContain('[REDACTED]');
+      expect(mockLog.mock.calls[0][0]).not.toContain(token);
+    });
+
+    it('should not degrade performance with multiple wrap calls', () => {
+      const token = 'secret_token_12345';
+      LogSanitizer.registerSensitiveValue(token);
+
+      // Mock console.log to avoid actual output
+      const mockLog = jest.fn();
+      console.log = mockLog;
+
+      // Wrap console once
+      LogSanitizer.wrapConsole();
+      
+      // Measure time for single wrap
+      const start1 = Date.now();
+      for (let i = 0; i < 1000; i++) {
+        console.log(`Test message ${i} with ${token}`);
+      }
+      const time1 = Date.now() - start1;
+
+      // Reset and wrap multiple times
+      mockLog.mockClear();
+      // @ts-ignore - accessing private static field for testing
+      LogSanitizer.isConsoleWrapped = false;
+      console.log = mockLog;
+
+      LogSanitizer.wrapConsole();
+      LogSanitizer.wrapConsole();
+      LogSanitizer.wrapConsole();
+      LogSanitizer.wrapConsole();
+      LogSanitizer.wrapConsole();
+
+      // Measure time for multiple wraps (should be same since idempotent)
+      const start2 = Date.now();
+      for (let i = 0; i < 1000; i++) {
+        console.log(`Test message ${i} with ${token}`);
+      }
+      const time2 = Date.now() - start2;
+
+      // Time should be similar (no significant degradation from layering)
+      // Since we're idempotent, times should be nearly identical
+      // Allow up to 50% difference due to timing variations
+      expect(time2).toBeLessThan(time1 * 1.5);
+    });
+
+    it('should work correctly with ConfigManager reload', () => {
+      process.env.APIFY_TOKEN = 'apify_token_12345';
+      process.env.APIFY_ACTOR_URL = 'https://test-actor.apify.actor';
+
+      // Mock console.log to capture output
+      const mockLog = jest.fn();
+      console.log = mockLog;
+
+      const configManager = new ConfigManager('nonexistent.json', true);
+      
+      // Load config (wraps console)
+      configManager.load();
+      const firstWrappedLog = console.log;
+
+      // Reload config (should not re-wrap)
+      configManager.reload();
+      const secondWrappedLog = console.log;
+
+      // Should be the same reference
+      expect(firstWrappedLog).toBe(secondWrappedLog);
+
+      // Call console.log
+      console.log(`Token: ${process.env.APIFY_TOKEN}`);
+      
+      // Should still sanitize correctly
+      expect(mockLog).toHaveBeenCalled();
+      const lastCall = mockLog.mock.calls[mockLog.mock.calls.length - 1];
+      expect(lastCall[0]).toContain('[REDACTED]');
+      expect(lastCall[0]).not.toContain('apify_token_12345');
     });
   });
 });

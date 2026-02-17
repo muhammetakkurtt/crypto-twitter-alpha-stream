@@ -14,7 +14,7 @@ export function createMockConfig(overrides: any = {}): AppConfig {
     apify: {
       token: 'test-token-12345',
       actorUrl: 'https://test-actor.apify.com',
-      endpoint: 'all' as const,
+      channels: ['all'], // Default channels for WebSocket
       ...overrides.apify
     },
     filters: {

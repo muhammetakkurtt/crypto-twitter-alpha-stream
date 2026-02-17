@@ -51,7 +51,7 @@ describe('DashboardOutput Property Tests', () => {
             expect(state.filters.eventTypes).toEqual(filterConfig.eventTypes);
           }
         ),
-        { numRuns: 100 }
+        { numRuns: 1000 }
       );
     });
   });
@@ -125,7 +125,7 @@ describe('DashboardOutput Property Tests', () => {
             expect(state.stats).toHaveProperty('startTime');
           }
         ),
-        { numRuns: 100 }
+        { numRuns: 1000 }
       );
     });
 });
@@ -217,7 +217,7 @@ describe('DashboardOutput Property Tests', () => {
             expect(state.filters).toHaveProperty('keywords');
           }
         ),
-        { numRuns: 100 }
+        { numRuns: 1000 }
       );
     });
   });
@@ -285,7 +285,7 @@ describe('DashboardOutput Property Tests', () => {
             expect(jsonString.endsWith('}')).toBe(true);
           }
         ),
-        { numRuns: 100 }
+        { numRuns: 1000 }
       );
     });
   });

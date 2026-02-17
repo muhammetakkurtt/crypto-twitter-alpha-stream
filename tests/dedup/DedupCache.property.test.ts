@@ -9,7 +9,8 @@ import { TwitterEvent, EventType } from '../../src/models/types';
 describe('DedupCache - Property Tests', () => {
   /**
    * For any two events E1 and E2, they should be considered duplicates 
-   * if and only if they have identical event type, primary ID, and timestamp.
+   * if and only if they have identical event type, primary ID, and content.
+   * Content hash ensures that updates with different data are not deduplicated.
    */
   describe('Property 10: Deduplication Key Uniqueness', () => {
     // Arbitrary generator for TwitterEvent
@@ -35,30 +36,23 @@ describe('DedupCache - Property Tests', () => {
       }),
     }) as fc.Arbitrary<TwitterEvent>;
 
-    it('should generate identical keys for events with same type, primaryId, and timestamp', () => {
+    it('should generate identical keys for events with same type, primaryId, and content', () => {
       fc.assert(
         fc.property(twitterEventArb, (event) => {
-          // Create two events with identical type, primaryId, and timestamp
+          // Create two events with identical type, primaryId, and data
           const event1: TwitterEvent = { ...event };
           const event2: TwitterEvent = {
             ...event,
-            // Change other fields to ensure only type, primaryId, timestamp matter
-            user: {
-              username: 'different_user',
-              displayName: 'Different User',
-              userId: 'different_id',
-            },
-            data: {
-              username: 'different_user',
-              action: 'post_created',
-              tweetId: 'different_tweet'
-            },
+            timestamp: new Date(Date.now() + 10000).toISOString(), // Different timestamp
+            // Keep same data - this is what matters for deduplication
+            data: JSON.parse(JSON.stringify(event.data))
           };
 
           const key1 = generateDedupKey(event1);
           const key2 = generateDedupKey(event2);
 
-          // Keys should be identical because type, primaryId, and timestamp are the same
+          // Keys should be identical because type, primaryId, and content are the same
+          // Timestamp difference doesn't matter
           expect(key1).toBe(key2);
         }),
         { numRuns: 100 }
@@ -115,28 +109,32 @@ describe('DedupCache - Property Tests', () => {
       );
     });
 
-    it('should generate different keys for events with different timestamps', () => {
+    it('should generate different keys for events with same type and primaryId but different content', () => {
       fc.assert(
         fc.property(
           twitterEventArb,
-          fc.integer({ 
-            min: new Date('2020-01-01T00:00:00.000Z').getTime(), 
-            max: new Date('2030-12-31T23:59:59.999Z').getTime() 
+          fc.record({
+            username: fc.string({ minLength: 1, maxLength: 20 }),
+            action: fc.string({ minLength: 1, maxLength: 20 }),
+            tweetId: fc.string({ minLength: 1, maxLength: 20 })
           }),
-          (event, differentTimestampMs) => {
-            const differentTimestamp = new Date(differentTimestampMs).toISOString();
-            fc.pre(event.timestamp !== differentTimestamp); // Ensure timestamps are different
+          (event, differentData) => {
+            // Ensure data is actually different
+            const originalDataStr = JSON.stringify(event.data);
+            const newDataStr = JSON.stringify(differentData);
+            fc.pre(originalDataStr !== newDataStr);
 
             const event1: TwitterEvent = { ...event };
             const event2: TwitterEvent = {
               ...event,
-              timestamp: differentTimestamp,
+              data: differentData, // Different content
             };
 
             const key1 = generateDedupKey(event1);
             const key2 = generateDedupKey(event2);
 
-            // Keys should be different because timestamps are different
+            // Keys should be different because content is different
+            // This allows updates with new data to be processed
             expect(key1).not.toBe(key2);
           }
         ),
@@ -144,13 +142,26 @@ describe('DedupCache - Property Tests', () => {
       );
     });
 
-    it('should generate keys in the format {type}:{primaryId}:{timestamp}', () => {
+    it('should generate keys in the format {type}:{primaryId}:{contentHash}', () => {
       fc.assert(
         fc.property(twitterEventArb, (event) => {
           const key = generateDedupKey(event);
-          const expectedKey = `${event.type}:${event.primaryId}:${event.timestamp}`;
-
-          expect(key).toBe(expectedKey);
+          
+          // Key should have at least 3 parts separated by colons
+          // (primaryId might contain colons, so we check minimum)
+          const parts = key.split(':');
+          expect(parts.length).toBeGreaterThanOrEqual(3);
+          
+          // First part should be event type
+          expect(parts[0]).toBe(event.type);
+          
+          // Last part should be content hash (alphanumeric string)
+          expect(parts[parts.length - 1]).toMatch(/^[a-z0-9]+$/);
+          
+          // Middle parts (when joined) should be primaryId
+          const middleParts = parts.slice(1, -1);
+          const reconstructedPrimaryId = middleParts.join(':');
+          expect(reconstructedPrimaryId).toBe(event.primaryId);
         }),
         { numRuns: 100 }
       );

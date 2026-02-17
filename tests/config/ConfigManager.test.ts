@@ -97,15 +97,15 @@ describe('ConfigManager - Unit Tests', () => {
       expect(config.apify.actorUrl).toBe('https://muhammetakkurtt--crypto-twitter-tracker.apify.actor');
     });
 
-    it('should parse ENDPOINT from environment', () => {
+    it('should parse CHANNELS from environment as comma-separated list', () => {
       process.env.APIFY_TOKEN = 'valid-token-abc123';
       process.env.APIFY_ACTOR_URL = 'https://test-actor.apify.actor';
-      process.env.ENDPOINT = 'tweets';
+      process.env.CHANNELS = 'tweets,following';
       
       const configManager = new ConfigManager('nonexistent.json', true);
       const config = configManager.load();
       
-      expect(config.apify.endpoint).toBe('tweets');
+      expect(config.apify.channels).toEqual(['tweets', 'following']);
     });
 
     it('should parse USERS from environment as comma-separated list', () => {
@@ -225,7 +225,7 @@ describe('ConfigManager - Unit Tests', () => {
       const configPath = path.join(testConfigDir, 'test-config.json');
       const testConfig = {
         apify: {
-          endpoint: 'following'
+          channels: ['following', 'tweets']
         },
         filters: {
           users: ['testuser1', 'testuser2'],
@@ -248,7 +248,7 @@ describe('ConfigManager - Unit Tests', () => {
       const configManager = new ConfigManager(configPath, true);
       const config = configManager.load();
       
-      expect(config.apify.endpoint).toBe('following');
+      expect(config.apify.channels).toEqual(['following', 'tweets']);
       expect(config.filters.users).toEqual(['testuser1', 'testuser2']);
       expect(config.filters.keywords).toEqual(['test', 'keyword']);
       expect(config.outputs.dashboard.port).toBe(4000);
@@ -263,7 +263,7 @@ describe('ConfigManager - Unit Tests', () => {
       const config = configManager.load();
       
       // Should use default values
-      expect(config.apify.endpoint).toBe('all');
+      expect(config.apify.channels).toEqual(['all']);
       expect(config.filters.users).toEqual([]);
       expect(config.outputs.dashboard.port).toBe(3000);
     });
@@ -278,7 +278,7 @@ describe('ConfigManager - Unit Tests', () => {
       const config = configManager.load();
       
       // Should use default values
-      expect(config.apify.endpoint).toBe('all');
+      expect(config.apify.channels).toEqual(['all']);
     });
   });
 
@@ -290,7 +290,7 @@ describe('ConfigManager - Unit Tests', () => {
       const configManager = new ConfigManager('nonexistent.json', true);
       const config = configManager.load();
       
-      expect(config.apify.endpoint).toBe('all');
+      expect(config.apify.channels).toEqual(['all']);
       expect(config.filters.users).toEqual([]);
       expect(config.filters.keywords).toEqual([]);
       expect(config.outputs.cli.enabled).toBe(true);
@@ -303,7 +303,7 @@ describe('ConfigManager - Unit Tests', () => {
       expect(config.reconnect.initialDelay).toBe(1000);
       expect(config.reconnect.maxDelay).toBe(30000);
       expect(config.reconnect.backoffMultiplier).toBe(2.0);
-      expect(config.reconnect.maxAttempts).toBe(10);
+      expect(config.reconnect.maxAttempts).toBe(0);
     });
   });
 
@@ -344,16 +344,172 @@ describe('ConfigManager - Unit Tests', () => {
       expect(() => configManager.load()).toThrow('Missing required configuration: APIFY_TOKEN');
     });
 
-    it('should ignore invalid endpoint from environment and keep default', () => {
+    it('should reject invalid channels from environment variable', () => {
       process.env.APIFY_TOKEN = 'valid-token-abc123';
       process.env.APIFY_ACTOR_URL = 'https://test-actor.apify.actor';
-      process.env.ENDPOINT = 'invalid-endpoint';
+      process.env.CHANNELS = 'invalid-channel';
+      
+      const configManager = new ConfigManager('nonexistent.json', true);
+      
+      expect(() => configManager.load()).toThrow(
+        'Invalid channel(s) in CHANNELS environment variable: invalid-channel'
+      );
+    });
+
+    it('should reject mixed valid and invalid channels', () => {
+      process.env.APIFY_TOKEN = 'valid-token-abc123';
+      process.env.APIFY_ACTOR_URL = 'https://test-actor.apify.actor';
+      process.env.CHANNELS = 'tweets,invalid,following';
+      
+      const configManager = new ConfigManager('nonexistent.json', true);
+      
+      expect(() => configManager.load()).toThrow(
+        'Invalid channel(s) in CHANNELS environment variable: invalid'
+      );
+    });
+  });
+
+  describe('Channel Normalization', () => {
+    it('should normalize empty channels array to ["all"]', () => {
+      const configPath = path.join(testConfigDir, 'empty-channels-config.json');
+      const testConfig = {
+        apify: {
+          channels: []
+        }
+      };
+      
+      fs.writeFileSync(configPath, JSON.stringify(testConfig, null, 2));
+      
+      process.env.APIFY_TOKEN = 'valid-token-abc123';
+      process.env.APIFY_ACTOR_URL = 'https://test-actor.apify.actor';
+      const configManager = new ConfigManager(configPath, true);
+      const config = configManager.load();
+      
+      expect(config.apify.channels).toEqual(['all']);
+    });
+
+    it('should normalize ["all", "tweets"] to ["all"]', () => {
+      process.env.APIFY_TOKEN = 'valid-token-abc123';
+      process.env.APIFY_ACTOR_URL = 'https://test-actor.apify.actor';
+      process.env.CHANNELS = 'all,tweets';
       
       const configManager = new ConfigManager('nonexistent.json', true);
       const config = configManager.load();
       
-      // Invalid endpoint is ignored, default 'all' is used
-      expect(config.apify.endpoint).toBe('all');
+      expect(config.apify.channels).toEqual(['all']);
+    });
+
+    it('should normalize ["all", "following", "profile"] to ["all"]', () => {
+      const configPath = path.join(testConfigDir, 'all-with-others-config.json');
+      const testConfig = {
+        apify: {
+          channels: ['all', 'following', 'profile']
+        }
+      };
+      
+      fs.writeFileSync(configPath, JSON.stringify(testConfig, null, 2));
+      
+      process.env.APIFY_TOKEN = 'valid-token-abc123';
+      process.env.APIFY_ACTOR_URL = 'https://test-actor.apify.actor';
+      const configManager = new ConfigManager(configPath, true);
+      const config = configManager.load();
+      
+      expect(config.apify.channels).toEqual(['all']);
+    });
+
+    it('should keep ["tweets", "following"] unchanged', () => {
+      process.env.APIFY_TOKEN = 'valid-token-abc123';
+      process.env.APIFY_ACTOR_URL = 'https://test-actor.apify.actor';
+      process.env.CHANNELS = 'tweets,following';
+      
+      const configManager = new ConfigManager('nonexistent.json', true);
+      const config = configManager.load();
+      
+      expect(config.apify.channels).toEqual(['tweets', 'following']);
+    });
+
+    it('should accept empty channels array as valid (normalizes to ["all"])', () => {
+      const configPath = path.join(testConfigDir, 'empty-channels-valid-config.json');
+      const testConfig = {
+        apify: {
+          channels: []
+        }
+      };
+      
+      fs.writeFileSync(configPath, JSON.stringify(testConfig, null, 2));
+      
+      process.env.APIFY_TOKEN = 'valid-token-abc123';
+      process.env.APIFY_ACTOR_URL = 'https://test-actor.apify.actor';
+      const configManager = new ConfigManager(configPath, true);
+      
+      // Should not throw error
+      expect(() => configManager.load()).not.toThrow();
+      
+      const config = configManager.load();
+      expect(config.apify.channels).toEqual(['all']);
+    });
+
+    it('should treat empty CHANNELS env var as override to all channels', () => {
+      const configPath = path.join(testConfigDir, 'channels-override-config.json');
+      const testConfig = {
+        apify: {
+          channels: ['tweets', 'following']
+        }
+      };
+      
+      fs.writeFileSync(configPath, JSON.stringify(testConfig, null, 2));
+      
+      process.env.APIFY_TOKEN = 'valid-token-abc123';
+      process.env.APIFY_ACTOR_URL = 'https://test-actor.apify.actor';
+      process.env.CHANNELS = '';  // Empty string overrides config file
+      
+      const configManager = new ConfigManager(configPath, true);
+      const config = configManager.load();
+      
+      // Empty CHANNELS env var overrides config file and normalizes to ['all']
+      expect(config.apify.channels).toEqual(['all']);
+    });
+
+    it('should treat empty CHANNELS env var with whitespace as override to all channels', () => {
+      const configPath = path.join(testConfigDir, 'channels-whitespace-config.json');
+      const testConfig = {
+        apify: {
+          channels: ['tweets', 'profile']
+        }
+      };
+      
+      fs.writeFileSync(configPath, JSON.stringify(testConfig, null, 2));
+      
+      process.env.APIFY_TOKEN = 'valid-token-abc123';
+      process.env.APIFY_ACTOR_URL = 'https://test-actor.apify.actor';
+      process.env.CHANNELS = '   ';  // Whitespace-only string overrides config file
+      
+      const configManager = new ConfigManager(configPath, true);
+      const config = configManager.load();
+      
+      // Whitespace-only CHANNELS env var overrides config file and normalizes to ['all']
+      expect(config.apify.channels).toEqual(['all']);
+    });
+
+    it('should respect precedence: empty CHANNELS env var > config file channels', () => {
+      const configPath = path.join(testConfigDir, 'precedence-config.json');
+      const testConfig = {
+        apify: {
+          channels: ['following']
+        }
+      };
+      
+      fs.writeFileSync(configPath, JSON.stringify(testConfig, null, 2));
+      
+      process.env.APIFY_TOKEN = 'valid-token-abc123';
+      process.env.APIFY_ACTOR_URL = 'https://test-actor.apify.actor';
+      process.env.CHANNELS = '';
+      
+      const configManager = new ConfigManager(configPath, true);
+      const config = configManager.load();
+      
+      // Empty env var takes precedence over config file
+      expect(config.apify.channels).toEqual(['all']);
     });
   });
 
@@ -392,18 +548,53 @@ describe('ConfigManager - Unit Tests', () => {
     it('should reload configuration with updated environment variables', () => {
       process.env.APIFY_TOKEN = 'valid-token-abc123';
       process.env.APIFY_ACTOR_URL = 'https://test-actor.apify.actor';
-      process.env.ENDPOINT = 'tweets';
+      process.env.CHANNELS = 'tweets';
       
       const configManager = new ConfigManager('nonexistent.json', true);
       let config = configManager.load();
       
-      expect(config.apify.endpoint).toBe('tweets');
+      expect(config.apify.channels).toEqual(['tweets']);
       
       // Change environment variable
-      process.env.ENDPOINT = 'following';
+      process.env.CHANNELS = 'following';
       
       config = configManager.reload();
-      expect(config.apify.endpoint).toBe('following');
+      expect(config.apify.channels).toEqual(['following']);
+    });
+  });
+
+  describe('Reconnection Configuration', () => {
+    it('should default to infinite reconnection attempts (maxAttempts = 0)', () => {
+      process.env.APIFY_TOKEN = 'valid-token-abc123';
+      process.env.APIFY_ACTOR_URL = 'https://test-actor.apify.actor';
+      
+      const configManager = new ConfigManager('nonexistent.json', true);
+      const config = configManager.load();
+      
+      // Default should be 0 (infinite retries) for production stability
+      expect(config.reconnect.maxAttempts).toBe(0);
+    });
+
+    it('should allow overriding maxAttempts via environment variable', () => {
+      process.env.APIFY_TOKEN = 'valid-token-abc123';
+      process.env.APIFY_ACTOR_URL = 'https://test-actor.apify.actor';
+      process.env.RECONNECT_MAX_ATTEMPTS = '10';
+      
+      const configManager = new ConfigManager('nonexistent.json', true);
+      const config = configManager.load();
+      
+      expect(config.reconnect.maxAttempts).toBe(10);
+    });
+
+    it('should support setting maxAttempts to 0 explicitly for infinite retries', () => {
+      process.env.APIFY_TOKEN = 'valid-token-abc123';
+      process.env.APIFY_ACTOR_URL = 'https://test-actor.apify.actor';
+      process.env.RECONNECT_MAX_ATTEMPTS = '0';
+      
+      const configManager = new ConfigManager('nonexistent.json', true);
+      const config = configManager.load();
+      
+      expect(config.reconnect.maxAttempts).toBe(0);
     });
   });
 });

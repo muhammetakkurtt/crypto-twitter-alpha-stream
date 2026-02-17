@@ -196,9 +196,138 @@ describe('Application', () => {
       // Application should not be running after failed startup
       expect(app.isApplicationRunning()).toBe(false);
     });
+
+    it('should call shutdown on startup failure to clean up resources', async () => {
+      const app = new Application();
+      
+      const mockConfig = createMockConfig();
+      (ConfigManager.prototype.load as jest.Mock).mockReturnValue(mockConfig);
+      
+      // Mock StreamCore.start to throw error after partial initialization
+      const StreamCore = require('../src/streamcore/StreamCore').StreamCore;
+      (StreamCore.prototype.start as jest.Mock).mockRejectedValue(new Error('Connection failed'));
+
+      await expect(app.start()).rejects.toThrow('Connection failed');
+      
+      // Application should not be running after failed startup
+      expect(app.isApplicationRunning()).toBe(false);
+    });
+
+    it('should clear timers on startup failure', async () => {
+      const app = new Application();
+      
+      const mockConfig = createMockConfig();
+      (ConfigManager.prototype.load as jest.Mock).mockReturnValue(mockConfig);
+      
+      // Mock ActiveUsersFetcher to track if stopPeriodicRefresh is called
+      const ActiveUsersFetcher = require('../src/activeusers/ActiveUsersFetcher').ActiveUsersFetcher;
+      const stopPeriodicRefreshMock = jest.fn();
+      (ActiveUsersFetcher.prototype.stopPeriodicRefresh as jest.Mock) = stopPeriodicRefreshMock;
+      
+      // Mock StreamCore.start to throw error after ActiveUsersFetcher is initialized
+      const StreamCore = require('../src/streamcore/StreamCore').StreamCore;
+      (StreamCore.prototype.start as jest.Mock).mockRejectedValue(new Error('Connection failed'));
+
+      await expect(app.start()).rejects.toThrow('Connection failed');
+      
+      // Verify stopPeriodicRefresh was called during cleanup
+      expect(stopPeriodicRefreshMock).toHaveBeenCalled();
+      
+      // Application should not be running
+      expect(app.isApplicationRunning()).toBe(false);
+    });
+
+    it('should close connections on startup failure', async () => {
+      const app = new Application();
+      
+      const mockConfig = createMockConfig();
+      (ConfigManager.prototype.load as jest.Mock).mockReturnValue(mockConfig);
+      
+      // Mock StreamCore to track if stop is called
+      const StreamCore = require('../src/streamcore/StreamCore').StreamCore;
+      const stopMock = jest.fn();
+      (StreamCore.prototype.stop as jest.Mock) = stopMock;
+      (StreamCore.prototype.start as jest.Mock).mockRejectedValue(new Error('Connection failed'));
+
+      await expect(app.start()).rejects.toThrow('Connection failed');
+      
+      // Verify stop was called during cleanup
+      expect(stopMock).toHaveBeenCalled();
+      
+      // Application should not be running
+      expect(app.isApplicationRunning()).toBe(false);
+    });
+
+    it('should set isRunning=true early and allow shutdown to clean up', async () => {
+      const app = new Application();
+      
+      const mockConfig = createMockConfig();
+      (ConfigManager.prototype.load as jest.Mock).mockReturnValue(mockConfig);
+      
+      // Mock to throw error during initialization
+      const StreamCore = require('../src/streamcore/StreamCore').StreamCore;
+      (StreamCore.prototype.start as jest.Mock).mockImplementation(() => {
+        // At this point, isRunning should be true
+        expect(app.isApplicationRunning()).toBe(true);
+        throw new Error('Connection failed');
+      });
+
+      await expect(app.start()).rejects.toThrow('Connection failed');
+      
+      // After cleanup, isRunning should be false
+      expect(app.isApplicationRunning()).toBe(false);
+    });
+
+    it('should handle errors during health monitor initialization', async () => {
+      const app = new Application();
+      
+      const mockConfig = createMockConfig();
+      (ConfigManager.prototype.load as jest.Mock).mockReturnValue(mockConfig);
+      
+      // Mock HealthMonitor.start to throw error
+      const HealthMonitor = require('../src/health/HealthMonitor').HealthMonitor;
+      (HealthMonitor.prototype.start as jest.Mock).mockRejectedValue(new Error('Port already in use'));
+
+      await expect(app.start()).rejects.toThrow('Port already in use');
+      
+      // Application should not be running after failed startup
+      expect(app.isApplicationRunning()).toBe(false);
+    });
+
+    it('should handle errors during output initialization', async () => {
+      const app = new Application();
+      
+      const mockConfig = createMockConfig({
+        outputs: {
+          cli: { enabled: true },
+          dashboard: { enabled: true, port: 3000 },
+          alerts: {
+            telegram: { enabled: false },
+            discord: { enabled: false },
+            webhook: { enabled: false }
+          }
+        }
+      });
+      (ConfigManager.prototype.load as jest.Mock).mockReturnValue(mockConfig);
+      
+      // Mock DashboardOutput.start to throw error
+      const DashboardOutput = require('../src/outputs/DashboardOutput').DashboardOutput;
+      (DashboardOutput.prototype.start as jest.Mock).mockRejectedValue(new Error('Dashboard port in use'));
+
+      await expect(app.start()).rejects.toThrow('Dashboard port in use');
+      
+      // Application should not be running after failed startup
+      expect(app.isApplicationRunning()).toBe(false);
+    });
   });
 
   describe('Configuration', () => {
+    beforeEach(() => {
+      // Reset all mocks before each configuration test
+      jest.clearAllMocks();
+      jest.resetAllMocks();
+    });
+
     it('should accept custom config file path', () => {
       const app = new Application({ configFilePath: 'custom/config.json' });
       expect(app).toBeDefined();
@@ -207,6 +336,92 @@ describe('Application', () => {
     it('should use default config file path when not specified', () => {
       const app = new Application();
       expect(app).toBeDefined();
+    });
+
+    it('should support HTTP URL format', async () => {
+      const app = new Application();
+      
+      const mockConfig = createMockConfig({
+        apify: {
+          actorUrl: 'http://localhost:3000',
+          token: 'test-token'
+        }
+      });
+
+      (ConfigManager.prototype.load as jest.Mock).mockReturnValue(mockConfig);
+
+      await app.start();
+      expect(app.isApplicationRunning()).toBe(true);
+      await app.shutdown();
+    });
+
+    it('should support HTTPS URL format', async () => {
+      const app = new Application();
+      
+      const mockConfig = createMockConfig({
+        apify: {
+          actorUrl: 'https://example.com',
+          token: 'test-token'
+        }
+      });
+
+      (ConfigManager.prototype.load as jest.Mock).mockReturnValue(mockConfig);
+
+      await app.start();
+      expect(app.isApplicationRunning()).toBe(true);
+      await app.shutdown();
+    });
+
+    it('should support WS URL format', async () => {
+      const app = new Application();
+      
+      const mockConfig = createMockConfig({
+        apify: {
+          actorUrl: 'ws://localhost:3000',
+          token: 'test-token'
+        }
+      });
+
+      (ConfigManager.prototype.load as jest.Mock).mockReturnValue(mockConfig);
+
+      await app.start();
+      expect(app.isApplicationRunning()).toBe(true);
+      await app.shutdown();
+    });
+
+    it('should support WSS URL format', async () => {
+      const app = new Application();
+      
+      const mockConfig = createMockConfig({
+        apify: {
+          actorUrl: 'wss://example.com',
+          token: 'test-token'
+        }
+      });
+
+      (ConfigManager.prototype.load as jest.Mock).mockReturnValue(mockConfig);
+
+      await app.start();
+      expect(app.isApplicationRunning()).toBe(true);
+      await app.shutdown();
+    });
+
+    it('should support multiple channels configuration', async () => {
+      const app = new Application();
+      
+      const mockConfig = createMockConfig({
+        apify: {
+          actorUrl: 'wss://example.com',
+          token: 'test-token',
+          channels: ['all', 'tweets', 'following']
+        }
+      });
+
+      (ConfigManager.prototype.load as jest.Mock).mockReturnValue(mockConfig);
+
+      await app.start();
+      expect(app.isApplicationRunning()).toBe(true);
+      await app.shutdown();
     });
   });
 });

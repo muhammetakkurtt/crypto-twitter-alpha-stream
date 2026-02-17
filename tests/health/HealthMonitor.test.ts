@@ -28,7 +28,7 @@ describe('HealthMonitor', () => {
       {
         baseUrl: 'http://localhost:3000',
         token: 'test-token',
-        endpoint: 'all'
+        channels: ['all']
       },
       filterPipeline,
       dedupCache,
@@ -58,8 +58,50 @@ describe('HealthMonitor', () => {
       expect(status).toBeDefined();
       expect(status.connection).toBeDefined();
       expect(status.connection.status).toBe('disconnected');
-      expect(status.connection.endpoint).toBe('all');
+      expect(status.connection.channels).toEqual(['all']);
       expect(status.connection.uptime).toBeGreaterThanOrEqual(0);
+    });
+
+    it('should collect WebSocket-specific metrics when available', () => {
+      // Create a mock WSSClient with WebSocket metrics
+      const mockWSSClient = {
+        getReconnectAttempts: jest.fn().mockReturnValue(3),
+        getBufferedAmount: jest.fn().mockReturnValue(1024),
+        getConnectionState: jest.fn().mockReturnValue('reconnecting'),
+        disconnect: jest.fn()
+      };
+
+      // Inject mock client into StreamCore
+      (streamCore as any).wssClient = mockWSSClient;
+      (streamCore as any).connectionStatus = 'reconnecting';
+
+      healthMonitor = new HealthMonitor({
+        port: 3001,
+        streamCore,
+        filterPipeline
+      });
+
+      const status = healthMonitor.getStatus();
+
+      expect(status.connection.reconnectAttempts).toBe(3);
+      expect(status.connection.bufferedBytes).toBe(1024);
+      expect(status.connection.status).toBe('reconnecting');
+    });
+
+    it('should not include WebSocket metrics when client is not available', () => {
+      // Ensure no WSSClient is set
+      (streamCore as any).wssClient = null;
+
+      healthMonitor = new HealthMonitor({
+        port: 3001,
+        streamCore,
+        filterPipeline
+      });
+
+      const status = healthMonitor.getStatus();
+
+      expect(status.connection.reconnectAttempts).toBeUndefined();
+      expect(status.connection.bufferedBytes).toBeUndefined();
     });
 
     it('should collect event statistics', () => {
@@ -172,8 +214,9 @@ describe('HealthMonitor', () => {
 
       // Verify connection structure
       expect(status.connection).toHaveProperty('status');
-      expect(status.connection).toHaveProperty('endpoint');
+      expect(status.connection).toHaveProperty('channels');
       expect(status.connection).toHaveProperty('uptime');
+      // reconnectAttempts and bufferedBytes are optional
 
       // Verify events structure
       expect(status.events).toHaveProperty('total');
@@ -189,6 +232,33 @@ describe('HealthMonitor', () => {
       // Verify filters structure
       expect(status.filters).toHaveProperty('users');
       expect(status.filters).toHaveProperty('keywords');
+    });
+
+    it('should include WebSocket metrics in JSON when available', () => {
+      // Create a mock WSSClient with WebSocket metrics
+      const mockWSSClient = {
+        getReconnectAttempts: jest.fn().mockReturnValue(2),
+        getBufferedAmount: jest.fn().mockReturnValue(512),
+        getConnectionState: jest.fn().mockReturnValue('connected'),
+        disconnect: jest.fn()
+      };
+
+      // Inject mock client into StreamCore
+      (streamCore as any).wssClient = mockWSSClient;
+
+      healthMonitor = new HealthMonitor({
+        port: 3001,
+        streamCore,
+        filterPipeline
+      });
+
+      const status = healthMonitor.getStatus();
+
+      // Verify WebSocket-specific fields are present
+      expect(status.connection).toHaveProperty('reconnectAttempts');
+      expect(status.connection).toHaveProperty('bufferedBytes');
+      expect(status.connection.reconnectAttempts).toBe(2);
+      expect(status.connection.bufferedBytes).toBe(512);
     });
 
     it('should be serializable to JSON', () => {
