@@ -2,4 +2,4 @@
  * StreamCore module exports
  */
 
-export { StreamCore, StreamCoreConfig, StreamCoreStats, ConnectionStatus, EndpointType } from './StreamCore';
+export { StreamCore, StreamCoreConfig, StreamCoreStats, ConnectionStatus } from './StreamCore';

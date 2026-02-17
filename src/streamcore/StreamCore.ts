@@ -1,30 +1,28 @@
 /**
  * StreamCore - Central orchestrator for the Crypto Twitter Alpha Stream
  * 
- * Integrates SSEClient, FilterPipeline, DedupCache, and EventBus to provide
+ * Integrates WSSClient, FilterPipeline, DedupCache, and EventBus to provide
  * the complete event processing flow: receive → parse → filter → dedup → broadcast
  */
 
-import { SSEClient, ConnectionConfig } from '../sse/SSEClient';
+import { WSSClient, ConnectionConfig, Channel, ConnectionState } from '../ws/WSSClient';
 import { FilterPipeline } from '../filters/FilterPipeline';
 import { DedupCache, generateDedupKey } from '../dedup/DedupCache';
 import { EventBus } from '../eventbus/EventBus';
 import { TwitterEvent } from '../models/types';
 
 export type ConnectionStatus = 'connected' | 'disconnected' | 'reconnecting';
-export type EndpointType = 'all' | 'tweets' | 'following' | 'profile';
 
 export interface StreamCoreConfig {
   baseUrl: string;
   token: string;
-  endpoint: EndpointType;
+  channels: Channel[]; // Multiple subscription channels for WebSocket
   userFilters?: string[];
   dedupTTL?: number;
   reconnectDelay?: number;
   maxReconnectDelay?: number;
   reconnectBackoffMultiplier?: number;
   maxReconnectAttempts?: number;
-  eventSourceClass?: any; // Optional dependency injection for testing
 }
 
 export interface StreamCoreStats {
@@ -32,18 +30,19 @@ export interface StreamCoreStats {
   deliveredEvents: number;
   dedupedEvents: number;
   connectionStatus: ConnectionStatus;
-  currentEndpoint: EndpointType;
+  channels: Channel[]; // Current subscribed channels
+  reconnectAttempts?: number;  // WebSocket reconnection attempts
+  bufferedBytes?: number;  // WebSocket buffered bytes
 }
 
 export class StreamCore {
-  private sseClient: SSEClient | null = null;
+  private wssClient: WSSClient | null = null;
   private filterPipeline: FilterPipeline;
   private dedupCache: DedupCache;
   private eventBus: EventBus;
   private config: StreamCoreConfig;
 
   private connectionStatus: ConnectionStatus = 'disconnected';
-  private currentEndpoint: EndpointType;
 
   // Statistics
   private totalEvents: number = 0;
@@ -57,46 +56,27 @@ export class StreamCore {
     eventBus: EventBus
   ) {
     this.config = config;
-    this.currentEndpoint = config.endpoint;
     this.filterPipeline = filterPipeline;
     this.dedupCache = dedupCache;
     this.eventBus = eventBus;
   }
 
   /**
-   * Start the stream by connecting to the configured endpoint
+   * Start the stream by connecting with configured channels
    */
   async start(): Promise<void> {
-    await this.connectToEndpoint(this.currentEndpoint);
+    await this.connect();
   }
 
   /**
    * Stop the stream and disconnect
    */
   stop(): void {
-    if (this.sseClient) {
-      this.sseClient.disconnect();
-      this.sseClient = null;
+    if (this.wssClient) {
+      this.wssClient.disconnect();
+      this.wssClient = null;
     }
     this.connectionStatus = 'disconnected';
-  }
-
-  /**
-   * Switch to a different endpoint
-   * Disconnects from current endpoint and connects to the new one
-   */
-  async switchEndpoint(endpoint: EndpointType): Promise<void> {
-    // Disconnect from current endpoint
-    if (this.sseClient) {
-      this.sseClient.disconnect();
-      this.sseClient = null;
-    }
-
-    this.connectionStatus = 'disconnected';
-    this.currentEndpoint = endpoint;
-
-    // Connect to new endpoint
-    await this.connectToEndpoint(endpoint);
   }
 
   /**
@@ -107,66 +87,72 @@ export class StreamCore {
   }
 
   /**
-   * Get current endpoint
+   * Get current channels
    */
-  getCurrentEndpoint(): EndpointType {
-    return this.currentEndpoint;
+  getChannels(): Channel[] {
+    return this.config.channels;
   }
 
   /**
    * Get statistics
    */
   getStats(): StreamCoreStats {
-    return {
+    const stats: StreamCoreStats = {
       totalEvents: this.totalEvents,
       deliveredEvents: this.deliveredEvents,
       dedupedEvents: this.dedupedEvents,
       connectionStatus: this.connectionStatus,
-      currentEndpoint: this.currentEndpoint
+      channels: this.config.channels
     };
+
+    // Add WebSocket-specific metrics if client is available
+    if (this.wssClient) {
+      stats.reconnectAttempts = this.wssClient.getReconnectAttempts();
+      stats.bufferedBytes = this.wssClient.getBufferedAmount();
+    }
+
+    return stats;
   }
 
   /**
-   * Connect to a specific endpoint
+   * Connect to WebSocket with configured channels
    */
-  private async connectToEndpoint(endpoint: EndpointType): Promise<void> {
-    const endpointUrl = this.getEndpointUrl(endpoint);
-
+  private async connect(): Promise<void> {
     // Extract user filters from config
     const userFilters = this.getUserFiltersFromConfig();
 
     const connectionConfig: ConnectionConfig = {
-      endpoint: endpointUrl,
+      baseUrl: this.config.baseUrl,  // Can be http/https/ws/wss - will be converted
       token: this.config.token,
+      channels: this.config.channels,  // Multiple channels supported
       users: userFilters,
       reconnectDelay: this.config.reconnectDelay ?? 1000,
       maxReconnectDelay: this.config.maxReconnectDelay ?? 30000,
       reconnectBackoffMultiplier: this.config.reconnectBackoffMultiplier ?? 2.0,
       maxReconnectAttempts: this.config.maxReconnectAttempts ?? 0,
-      eventSourceClass: this.config.eventSourceClass
     };
 
-    this.sseClient = new SSEClient(connectionConfig);
+    this.wssClient = new WSSClient(connectionConfig);
 
     // Register event handler
-    this.sseClient.onEvent(async (event: TwitterEvent) => {
+    this.wssClient.onEvent(async (event: TwitterEvent) => {
       await this.handleEvent(event);
     });
 
     // Register error handler
-    this.sseClient.onError((error: Error) => {
+    this.wssClient.onError((error: Error) => {
       this.handleError(error);
     });
 
-    // Register reconnect handler
-    this.sseClient.onReconnect(() => {
-      this.connectionStatus = 'reconnecting';
+    // Register state change handler
+    this.wssClient.onStateChange((state: ConnectionState) => {
+      this.connectionStatus = this.mapWSSStateToStreamState(state);
     });
 
     // Attempt connection
     try {
       this.connectionStatus = 'reconnecting';
-      await this.sseClient.connect();
+      await this.wssClient.connect();
       this.connectionStatus = 'connected';
     } catch (error) {
       this.connectionStatus = 'disconnected';
@@ -175,22 +161,17 @@ export class StreamCore {
   }
 
   /**
-   * Get the full URL for an endpoint type
+   * Map WSSClient ConnectionState to StreamCore ConnectionStatus
    */
-  private getEndpointUrl(endpoint: EndpointType): string {
-    const baseUrl = this.config.baseUrl.replace(/\/$/, ''); // Remove trailing slash
-
-    switch (endpoint) {
-      case 'all':
-        return `${baseUrl}/events/twitter/all`;
-      case 'tweets':
-        return `${baseUrl}/events/twitter/tweets`;
-      case 'following':
-        return `${baseUrl}/events/twitter/following`;
-      case 'profile':
-        return `${baseUrl}/events/twitter/profile`;
-      default:
-        throw new Error(`Unknown endpoint type: ${endpoint}`);
+  private mapWSSStateToStreamState(wssState: ConnectionState): ConnectionStatus {
+    switch (wssState) {
+      case 'connected':
+        return 'connected';
+      case 'disconnected':
+        return 'disconnected';
+      case 'connecting':
+      case 'reconnecting':
+        return 'reconnecting';
     }
   }
 
@@ -206,7 +187,7 @@ export class StreamCore {
   }
 
   /**
-   * Handle incoming event from SSE client
+   * Handle incoming event from WebSocket client
    * Flow: receive → parse → filter → dedup → broadcast
    */
   private async handleEvent(event: TwitterEvent): Promise<void> {
@@ -252,8 +233,8 @@ export class StreamCore {
 
   /**
    * Validate event structure
-   * Accepts internal format only (after SSEClient transformation)
-   * SSEClient is responsible for transforming actor format to internal format
+   * Accepts internal format only (after WSSClient transformation)
+   * WSSClient is responsible for transforming actor format to internal format
    */
   private isValidEvent(event: any): boolean {
     try {
@@ -274,7 +255,7 @@ export class StreamCore {
         return false;
       }
 
-      // Check for internal format (after SSEClient transformation)
+      // Check for internal format (after WSSClient transformation)
       const hasInternalFormat = event.user &&
         typeof event.user === 'object' &&
         typeof event.user.username === 'string' &&

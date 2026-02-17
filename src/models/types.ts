@@ -212,7 +212,7 @@ export interface FollowingData {
   others?: any[];
 }
 
-// Raw Event from SSE
+// Raw Event from WebSocket
 export interface RawEvent {
   id: string;
   event: string;
@@ -240,8 +240,10 @@ export interface EventStats {
 export interface HealthStatus {
   connection: {
     status: 'connected' | 'disconnected' | 'reconnecting';
-    endpoint: string;
+    channels: string[];
     uptime: number;  // seconds
+    reconnectAttempts?: number;  // Current reconnection attempt count (WebSocket)
+    bufferedBytes?: number;  // Buffered bytes in WebSocket send buffer
   };
   events: {
     total: number;
