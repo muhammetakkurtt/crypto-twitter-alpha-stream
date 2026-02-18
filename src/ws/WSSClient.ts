@@ -3,9 +3,7 @@
  */
 
 import WebSocket from 'ws';
-import { TwitterEvent } from '../models/types';
-
-export type Channel = 'all' | 'tweets' | 'following' | 'profile';
+import { TwitterEvent, Channel } from '../models/types';
 
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
 
@@ -36,9 +34,17 @@ export class WSSClient {
   private shouldReconnect: boolean = true;
   private isExpectedShutdown: boolean = false;
 
+  // Runtime subscription state (updated by updateSubscription)
+  private runtimeChannels: Channel[];
+  private runtimeUsers: string[] | undefined;
+
   // Promise lifecycle management
   private connectResolve: (() => void) | null = null;
   private connectReject: ((error: Error) => void) | null = null;
+  private updateSubscriptionResolve: (() => void) | null = null;
+  private updateSubscriptionReject: ((error: Error) => void) | null = null;
+  private pendingSubscriptionRequest: boolean = false;
+  private pendingSubscriptionRequestId: string | null = null;
 
   private eventCallbacks: EventCallback[] = [];
   private errorCallbacks: ErrorCallback[] = [];
@@ -46,6 +52,9 @@ export class WSSClient {
 
   constructor(config: ConnectionConfig) {
     this.config = config;
+    // Initialize runtime subscription state from config
+    this.runtimeChannels = config.channels;
+    this.runtimeUsers = config.users;
   }
 
   /**
@@ -126,7 +135,7 @@ export class WSSClient {
           if (this.connectReject) {
             const error = new Error(`Connection timeout: No subscription confirmation received within ${timeoutMs}ms`);
             this.rejectConnectPromise(error);
-            this.disconnect();
+            this.handleSubscribeTimeout();
           }
         }, timeoutMs);
 
@@ -173,6 +182,14 @@ export class WSSClient {
         // Handle connection close
         this.ws.on('close', (code: number) => {
           this.setState('disconnected');
+
+          if (this.updateSubscriptionReject) {
+            this.updateSubscriptionReject(new Error('Connection closed during subscription update'));
+          }
+          this.updateSubscriptionResolve = null;
+          this.updateSubscriptionReject = null;
+          this.pendingSubscriptionRequest = false;
+          this.pendingSubscriptionRequestId = null;
 
           // Check if this is a manual disconnect (shouldReconnect = false)
           if (!this.shouldReconnect) {
@@ -239,6 +256,15 @@ export class WSSClient {
       this.connectionTimeout = null;
     }
 
+    // Reject and clear pending updateSubscription promise
+    if (this.updateSubscriptionReject) {
+      this.updateSubscriptionReject(new Error('Connection closed'));
+    }
+    this.updateSubscriptionResolve = null;
+    this.updateSubscriptionReject = null;
+    this.pendingSubscriptionRequest = false;
+    this.pendingSubscriptionRequestId = null;
+
     if (this.ws) {
       this.ws.close();
       this.ws = null;
@@ -270,6 +296,102 @@ export class WSSClient {
       return this.ws.bufferedAmount;
     }
     return 0;
+  }
+
+  /**
+   * Generate a unique request ID for subscription requests
+   */
+  private generateRequestId(): string {
+    return `sub-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+  }
+
+  /**
+   * Update subscription at runtime
+   * Sends a new subscribe message to replace the current subscription
+   * 
+   * @param channels - New channels to subscribe to
+   * @param users - New user filters (optional)
+   * @param timeout - Acknowledgment timeout in ms (default: 10000)
+   * @returns Promise that resolves when actor acknowledges subscription
+   * @throws Error if subscription fails or times out
+   */
+  async updateSubscription(
+    channels: Channel[],
+    users?: string[],
+    timeout: number = 10000
+  ): Promise<void> {
+    return new Promise((resolve, reject) => {
+      // Validate connection state
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+        reject(new Error('WebSocket not connected'));
+        return;
+      }
+
+      // Validate channels
+      try {
+        this.validateChannels(channels);
+      } catch (error) {
+        reject(error);
+        return;
+      }
+
+      // Generate unique request ID for this subscription request
+      const requestId = this.generateRequestId();
+
+      // Set up timeout
+      const timeoutId = setTimeout(() => {
+        this.updateSubscriptionResolve = null;
+        this.updateSubscriptionReject = null;
+        this.pendingSubscriptionRequest = false;
+        this.pendingSubscriptionRequestId = null;
+        reject(new Error(`Subscription update timeout after ${timeout}ms`));
+      }, timeout);
+
+      // Mark that we have a pending subscription request with this ID
+      this.pendingSubscriptionRequest = true;
+      this.pendingSubscriptionRequestId = requestId;
+
+      // Store promise callbacks for lifecycle management
+      this.updateSubscriptionResolve = () => {
+        clearTimeout(timeoutId);
+        this.updateSubscriptionResolve = null;
+        this.updateSubscriptionReject = null;
+        this.pendingSubscriptionRequest = false;
+        this.pendingSubscriptionRequestId = null;
+        
+        // Store runtime subscription state for reconnect (only on success)
+        this.runtimeChannels = channels;
+        this.runtimeUsers = users;
+        
+        resolve();
+      };
+
+      this.updateSubscriptionReject = (error: Error) => {
+        clearTimeout(timeoutId);
+        this.updateSubscriptionResolve = null;
+        this.updateSubscriptionReject = null;
+        this.pendingSubscriptionRequest = false;
+        this.pendingSubscriptionRequestId = null;
+        reject(error);
+      };
+
+      // Build and send subscribe message with request ID
+      const subscribeMessage: any = {
+        op: 'subscribe',
+        channels: channels,
+        requestId: requestId
+      };
+
+      if (users && users.length > 0) {
+        subscribeMessage.users = users;
+      }
+
+      if (process.env.DEBUG === 'true') {
+        console.log(`[WSSClient] Sending runtime subscribe update: ${JSON.stringify(subscribeMessage)}`);
+      }
+
+      this.ws.send(JSON.stringify(subscribeMessage));
+    });
   }
 
   /**
@@ -320,6 +442,26 @@ export class WSSClient {
           console.log(`[WSSClient] Subscribed successfully: ${JSON.stringify(message.data)}`);
         }
         this.resolveConnectPromise();
+        
+        // Resolve updateSubscription promise if pending
+        if (this.pendingSubscriptionRequest && this.updateSubscriptionResolve) {
+          const responseRequestId = message.data?.requestId;
+          
+          // If we have a pending request ID, check if response matches
+          if (this.pendingSubscriptionRequestId && responseRequestId) {
+            // Both sides have request IDs - they must match
+            if (responseRequestId === this.pendingSubscriptionRequestId) {
+              this.updateSubscriptionResolve();
+            } else if (process.env.DEBUG === 'true') {
+              console.log(`[WSSClient] Ignoring subscribed event with mismatched request ID: expected ${this.pendingSubscriptionRequestId}, got ${responseRequestId}`);
+            }
+          } else {
+            // Either we don't have a request ID, or response doesn't have one
+            // For backward compatibility, resolve the promise
+            this.updateSubscriptionResolve();
+          }
+        }
+        
         return;
       }
 
@@ -333,7 +475,28 @@ export class WSSClient {
         // Server error
         const errorMessage = message.data?.message || 'Unknown error';
         const errorCode = message.data?.code || 'UNKNOWN';
-        this.notifyError(new Error(`Server error [${errorCode}]: ${errorMessage}`));
+        const error = new Error(`Server error [${errorCode}]: ${errorMessage}`);
+        
+        // If there's a pending subscription request, check if this error is for it
+        if (this.pendingSubscriptionRequest && this.updateSubscriptionReject) {
+          const responseRequestId = message.data?.requestId;
+          
+          // If we have a pending request ID, check if response matches
+          if (this.pendingSubscriptionRequestId && responseRequestId) {
+            // Both sides have request IDs - they must match
+            if (responseRequestId === this.pendingSubscriptionRequestId) {
+              this.updateSubscriptionReject(error);
+            } else if (process.env.DEBUG === 'true') {
+              console.log(`[WSSClient] Ignoring error event with mismatched request ID: expected ${this.pendingSubscriptionRequestId}, got ${responseRequestId}`);
+            }
+          } else {
+            // Either we don't have a request ID, or response doesn't have one
+            // For backward compatibility, reject the promise
+            this.updateSubscriptionReject(error);
+          }
+        }
+        
+        this.notifyError(error);
         return;
       }
 
@@ -404,16 +567,16 @@ export class WSSClient {
     }
 
     // Validate channels before sending
-    this.validateChannels(this.config.channels);
+    this.validateChannels(this.runtimeChannels);
 
     const subscribeMessage: any = {
       op: 'subscribe',
-      channels: this.config.channels
+      channels: this.runtimeChannels
     };
 
     // Only include users field if filters are configured
-    if (this.config.users && this.config.users.length > 0) {
-      subscribeMessage.users = this.config.users;
+    if (this.runtimeUsers && this.runtimeUsers.length > 0) {
+      subscribeMessage.users = this.runtimeUsers;
     }
 
     if (process.env.DEBUG === 'true') {
@@ -550,6 +713,37 @@ export class WSSClient {
         this.notifyError(error as Error);
       });
     }, 5000);
+  }
+
+  /**
+   * Handle subscribe timeout without disabling reconnect
+   * 
+   * Timeout Handling:
+   * - Close WebSocket connection but keep shouldReconnect=true
+   * - Allow reconnect logic to continue after temporary timeout
+   * - Log timeout error but maintain reconnect capability
+   * - Ensures automatic recovery on temporary network/ack delays
+   */
+  private handleSubscribeTimeout(): void {
+    if (process.env.DEBUG === 'true') {
+      console.log('[WSSClient] Subscribe timeout detected, closing connection but maintaining reconnect capability');
+    }
+
+    // Clear connection timeout
+    if (this.connectionTimeout) {
+      clearTimeout(this.connectionTimeout);
+      this.connectionTimeout = null;
+    }
+
+    // Close WebSocket connection without disabling reconnect
+    // CRITICAL: Do NOT call disconnect() as it sets shouldReconnect=false
+    if (this.ws) {
+      this.ws.close();
+      this.ws = null;
+    }
+
+    // Note: shouldReconnect remains true, allowing reconnect logic to continue
+    // The 'close' event handler will trigger scheduleReconnect()
   }
 
   /**
