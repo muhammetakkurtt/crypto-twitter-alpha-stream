@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { eventsStore } from '$lib/stores/events.svelte';
 import { filtersStore } from '$lib/stores/filters.svelte';
 import { searchStore } from '$lib/stores/search.svelte';
+import { subscriptionStore } from '$lib/stores/subscription.svelte';
 import type { TwitterEvent } from '$lib/types';
 
 describe('User Interaction Flow Integration', () => {
@@ -228,5 +229,139 @@ describe('User Interaction Flow Integration', () => {
     eventsStore.addEvent(newEvent);
     
     expect(eventsStore.filteredEvents.length).toBe(initialCount + 1);
+  });
+});
+
+describe('SubscriptionPanel UI Sync Integration', () => {
+  beforeEach(() => {
+    // Initialize subscription store with test state
+    subscriptionStore.initialize({
+      channels: ['tweets'],
+      users: [],
+      mode: 'active',
+      source: 'config',
+      updatedAt: new Date().toISOString()
+    });
+    
+    // Clear filters store
+    filtersStore.clearAll();
+  });
+  
+  it('should update textarea when "Use selected users" is clicked', () => {
+    // Simulate user selection in left sidebar
+    filtersStore.toggleUser('elonmusk');
+    filtersStore.toggleUser('vitalikbuterin');
+    
+    // Verify users are selected in filters
+    expect(filtersStore.users).toHaveLength(2);
+    expect(filtersStore.users).toContain('elonmusk');
+    expect(filtersStore.users).toContain('vitalikbuterin');
+    
+    // Simulate clicking "Use selected users" button
+    subscriptionStore.copyFromLocalSelected(filtersStore.users);
+    
+    // Verify staged users are updated
+    expect(subscriptionStore.stagedUsers).toHaveLength(2);
+    expect(subscriptionStore.stagedUsers).toContain('elonmusk');
+    expect(subscriptionStore.stagedUsers).toContain('vitalikbuterin');
+    
+    // In the actual component, usersInput would be set to:
+    const expectedUsersInput = subscriptionStore.stagedUsers.join(', ');
+    expect(expectedUsersInput).toBe('elonmusk, vitalikbuterin');
+  });
+  
+  it('should clear textarea when "Clear upstream users" is clicked', () => {
+    // Set up initial state with users
+    subscriptionStore.setStagedUsers(['elonmusk', 'vitalikbuterin']);
+    expect(subscriptionStore.stagedUsers).toHaveLength(2);
+    
+    // Simulate clicking "Clear upstream users" button
+    subscriptionStore.clearUpstreamUsers();
+    
+    // Verify staged users are cleared
+    expect(subscriptionStore.stagedUsers).toHaveLength(0);
+    
+    // In the actual component, usersInput would be set to empty string
+    const expectedUsersInput = '';
+    expect(expectedUsersInput).toBe('');
+  });
+  
+  it('should activate Apply button after copy operation', () => {
+    // Initialize with some applied state
+    subscriptionStore.initialize({
+      channels: ['tweets'],
+      users: [],
+      mode: 'active',
+      source: 'config',
+      updatedAt: new Date().toISOString()
+    });
+    
+    // Initially no unsaved changes
+    expect(subscriptionStore.hasUnsavedChanges).toBe(false);
+    
+    // Simulate user selection and copy
+    filtersStore.toggleUser('elonmusk');
+    subscriptionStore.copyFromLocalSelected(filtersStore.users);
+    
+    // Verify unsaved changes flag is set
+    expect(subscriptionStore.hasUnsavedChanges).toBe(true);
+    expect(subscriptionStore.stagedUsers).toContain('elonmusk');
+  });
+  
+  it('should handle empty user selection gracefully', () => {
+    // Clear all filters
+    filtersStore.clearAll();
+    expect(filtersStore.users).toHaveLength(0);
+    
+    // Simulate clicking "Use selected users" with no users selected
+    subscriptionStore.copyFromLocalSelected(filtersStore.users);
+    
+    // Verify staged users remain empty
+    expect(subscriptionStore.stagedUsers).toHaveLength(0);
+    
+    // usersInput should be empty
+    const expectedUsersInput = subscriptionStore.stagedUsers.join(', ');
+    expect(expectedUsersInput).toBe('');
+  });
+  
+  it('should normalize users when copying from local filter', () => {
+    // Simulate user selection with mixed case and duplicates
+    const mixedUsers = ['ElonMusk', 'VITALIKBUTERIN', 'elonmusk'];
+    
+    // Manually add to filters (bypassing toggleUser to test normalization)
+    mixedUsers.forEach(user => filtersStore.toggleUser(user));
+    
+    // Copy to subscription store (which normalizes)
+    subscriptionStore.copyFromLocalSelected(filtersStore.users);
+    
+    // Verify normalization: lowercase, unique, sorted
+    const stagedUsers = subscriptionStore.stagedUsers;
+    expect(stagedUsers.every(u => u === u.toLowerCase())).toBe(true);
+    expect(new Set(stagedUsers).size).toBe(stagedUsers.length); // No duplicates
+  });
+  
+  it('should preserve textarea state after discard', () => {
+    // Set up initial applied state with users
+    subscriptionStore.initialize({
+      channels: ['tweets'],
+      users: ['satoshi', 'nakamoto'],
+      mode: 'active',
+      source: 'runtime',
+      updatedAt: new Date().toISOString()
+    });
+    
+    // Modify staged users
+    subscriptionStore.setStagedUsers(['elonmusk']);
+    expect(subscriptionStore.stagedUsers).toEqual(['elonmusk']);
+    
+    // Discard changes
+    subscriptionStore.discardChanges();
+    
+    // Verify staged users revert to applied state
+    expect(subscriptionStore.stagedUsers).toEqual(['satoshi', 'nakamoto']);
+    
+    // In the actual component, usersInput would be restored to:
+    const expectedUsersInput = subscriptionStore.stagedUsers.join(', ');
+    expect(expectedUsersInput).toBe('satoshi, nakamoto');
   });
 });

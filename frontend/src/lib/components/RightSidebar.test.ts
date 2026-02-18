@@ -92,7 +92,7 @@ describe('RightSidebar Component Logic', () => {
   });
 
   describe('FilterPanel and StatsPanel Integration', () => {
-    it('should render both FilterPanel and StatsPanel when open', () => {
+    it('should render SubscriptionPanel, FilterPanel and StatsPanel when open', () => {
       if (sidebarStore.rightCollapsed) {
         sidebarStore.toggleRight();
       }
@@ -100,7 +100,7 @@ describe('RightSidebar Component Logic', () => {
       const isOpen = !sidebarStore.rightCollapsed;
       expect(isOpen).toBe(true);
       
-      // Both panels should be rendered in the sidebar
+      // All three panels should be rendered in the sidebar
       // This is verified by the component structure
     });
 

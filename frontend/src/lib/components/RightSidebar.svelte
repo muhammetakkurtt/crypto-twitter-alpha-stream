@@ -5,6 +5,7 @@
   import { useFocusTrap } from '$lib/hooks/useFocusTrap';
   import FilterPanel from './FilterPanel.svelte';
   import StatsPanel from './StatsPanel.svelte';
+  import SubscriptionPanel from './SubscriptionPanel.svelte';
   import SidebarToggle from './SidebarToggle.svelte';
   import { X } from 'lucide-svelte';
   
@@ -110,7 +111,7 @@
   class="right-sidebar" 
   class:open={isOpen}
   style="--swipe-progress: {swipeProgress}"
-  aria-label="Filters and statistics sidebar"
+  aria-label="Controls sidebar"
   aria-hidden={!isOpen}
 >
   <!-- Sidebar Header with Close Button -->
@@ -128,9 +129,12 @@
         stroke-linejoin="round"
         aria-hidden="true"
       >
-        <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
+        <rect x="3" y="3" width="7" height="7" />
+        <rect x="14" y="3" width="7" height="7" />
+        <rect x="14" y="14" width="7" height="7" />
+        <rect x="3" y="14" width="7" height="7" />
       </svg>
-      Filters & Stats
+      Controls
     </h2>
     <button
       class="close-button"
@@ -146,13 +150,87 @@
   <!-- Lazy load content: only render after first open -->
   {#if hasBeenOpened}
     <div class="sidebar-content">
-      <div class="panel-wrapper">
-        <FilterPanel />
-      </div>
+      <!-- Global Subscription Section -->
+      <section class="panel-section" aria-labelledby="global-subscription-heading">
+        <h3 id="global-subscription-heading" class="section-heading">
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <circle cx="12" cy="12" r="10" />
+            <path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20" />
+            <path d="M2 12h20" />
+          </svg>
+          Global Subscription
+          <span class="section-badge">Affects all outputs</span>
+        </h3>
+        <div class="panel-wrapper">
+          <SubscriptionPanel />
+        </div>
+      </section>
       
-      <div class="panel-wrapper">
-        <StatsPanel />
-      </div>
+      <div class="section-separator" role="separator" aria-hidden="true"></div>
+      
+      <!-- Local Filters Section -->
+      <section class="panel-section" aria-labelledby="local-filters-heading">
+        <h3 id="local-filters-heading" class="section-heading">
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
+          </svg>
+          Local Filters
+          <span class="section-badge">Dashboard view only</span>
+        </h3>
+        <div class="panel-wrapper">
+          <FilterPanel />
+        </div>
+      </section>
+      
+      <div class="section-separator" role="separator" aria-hidden="true"></div>
+      
+      <!-- Statistics Section -->
+      <section class="panel-section" aria-labelledby="statistics-heading">
+        <h3 id="statistics-heading" class="section-heading">
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <line x1="18" y1="20" x2="18" y2="10" />
+            <line x1="12" y1="20" x2="12" y2="4" />
+            <line x1="6" y1="20" x2="6" y2="14" />
+          </svg>
+          Statistics
+        </h3>
+        <div class="panel-wrapper">
+          <StatsPanel />
+        </div>
+      </section>
     </div>
   {:else}
     <!-- Placeholder for initial render -->
@@ -171,7 +249,7 @@
       side="right"
       collapsed={sidebarStore.rightCollapsed}
       onToggle={() => sidebarStore.toggleRight()}
-      ariaLabel="Open filters and statistics sidebar"
+      ariaLabel="Open controls sidebar"
     />
   </div>
 {/if}
@@ -347,10 +425,65 @@
   .sidebar-content {
     display: flex;
     flex-direction: column;
-    gap: 1.5rem;
+    gap: 0;
     height: calc(100% - 60px); /* Account for header height */
     overflow-y: auto;
-    padding: 1rem;
+    padding: 0;
+  }
+  
+  /* Panel Section */
+  .panel-section {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    padding: 1.5rem 1rem;
+  }
+  
+  /* Section Heading */
+  .section-heading {
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
+    font-size: 0.875rem;
+    font-weight: 700;
+    color: #f1f5f9;
+    margin: 0 0 0.5rem 0;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 0 0.5rem;
+  }
+  
+  .section-heading svg {
+    flex-shrink: 0;
+    color: #60a5fa;
+  }
+  
+  /* Section Badge */
+  .section-badge {
+    margin-left: auto;
+    padding: 0.25rem 0.625rem;
+    border-radius: var(--radius-sm, 6px);
+    background: rgba(59, 130, 246, 0.15);
+    border: 1px solid rgba(59, 130, 246, 0.3);
+    color: #93c5fd;
+    font-size: 0.625rem;
+    font-weight: 600;
+    text-transform: none;
+    letter-spacing: 0.025em;
+    white-space: nowrap;
+  }
+  
+  /* Section Separator */
+  .section-separator {
+    height: 1px;
+    background: linear-gradient(
+      to right,
+      transparent,
+      rgba(148, 163, 184, 0.2) 20%,
+      rgba(148, 163, 184, 0.2) 80%,
+      transparent
+    );
+    margin: 0.5rem 1rem;
   }
   
   .sidebar-content::-webkit-scrollbar {
@@ -373,6 +506,7 @@
   
   .panel-wrapper {
     flex-shrink: 0;
+    padding: 0 0.5rem;
   }
   
   /* Loading Placeholder */
@@ -408,6 +542,29 @@
     
     .sidebar-backdrop {
       background: rgba(0, 0, 0, 0.4);
+    }
+    
+    .panel-section {
+      padding: 1rem 0.75rem;
+    }
+    
+    .section-heading {
+      font-size: 0.8125rem;
+      gap: 0.5rem;
+      padding: 0 0.25rem;
+    }
+    
+    .section-badge {
+      font-size: 0.5625rem;
+      padding: 0.1875rem 0.5rem;
+    }
+    
+    .section-separator {
+      margin: 0.25rem 0.75rem;
+    }
+    
+    .panel-wrapper {
+      padding: 0 0.25rem;
     }
   }
 </style>
