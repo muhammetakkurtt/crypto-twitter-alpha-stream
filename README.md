@@ -591,6 +591,306 @@ To see the full list of monitored users, visit:
 
 The application will still proceed with the connection, but you'll only receive events for valid usernames.
 
+## Runtime Subscription Management
+
+The dashboard provides runtime subscription management, allowing you to modify subscription parameters (channels and users) without restarting the application. This feature uses a staged-apply UX pattern with security controls.
+
+### Overview
+
+Runtime subscription management enables you to:
+- Change monitored channels (all, tweets, following, profile) on the fly
+- Update user filters without restarting
+- Transition to idle mode (empty channels) to pause monitoring
+- View current subscription state and history
+
+**Important**: Runtime changes are temporary and do not persist across restarts. To make changes permanent, edit your configuration file.
+
+### Staged-Apply UX Pattern
+
+The dashboard uses a staged-apply workflow to prevent accidental changes:
+
+1. **Draft Changes**: Modify channels and users in the UI (staged state)
+2. **Review**: See what will change before applying
+3. **Apply**: Click "Apply Changes" to send to server
+4. **Broadcast**: All connected dashboards receive the update
+
+**Benefits**:
+- Preview changes before applying
+- Discard unwanted changes
+- Clear indication of unsaved changes
+- Atomic updates (all or nothing)
+
+**Example Workflow**:
+
+```
+Current State: channels=["all"], users=["elonmusk"]
+         ↓
+User modifies in UI: channels=["tweets"], users=["elonmusk", "vitalikbuterin"]
+         ↓
+Staged state updated (not yet applied)
+         ↓
+User clicks "Apply Changes"
+         ↓
+Server updates subscription atomically
+         ↓
+All dashboards receive broadcast and update
+```
+
+### Security Controls
+
+Subscription modifications are restricted based on client origin:
+
+**Control Clients** (localhost connections):
+- Can read subscription state
+- Can modify subscriptions
+- Identified by loopback addresses: 127.0.0.1, ::1, ::ffff:127.0.0.1, localhost
+
+**Read-Only Clients** (remote connections):
+- Can read subscription state
+- Cannot modify subscriptions
+- Attempts to modify return "Forbidden" error
+
+**Why This Matters**:
+- Prevents unauthorized subscription changes from remote clients
+- Ensures only local operators can modify monitoring configuration
+- Protects against accidental or malicious changes
+
+**Example**:
+
+```javascript
+// Local client (127.0.0.1)
+socket.emit('setRuntimeSubscription', {...});
+// ✅ Success: Subscription updated
+
+// Remote client (192.168.1.100)
+socket.emit('setRuntimeSubscription', {...});
+// ❌ Error: Forbidden
+```
+
+### Idle Mode
+
+Idle mode allows you to pause monitoring while maintaining the connection:
+
+**What is Idle Mode?**
+- Empty channels array: `channels: []`
+- Connection to actor remains active
+- No events are received or processed
+- No event processing costs incurred
+
+**When to Use Idle Mode**:
+- Temporarily pause monitoring without disconnecting
+- Reduce costs during low-activity periods
+- Maintain connection for quick resume
+
+**How to Enter Idle Mode**:
+
+Via Dashboard:
+1. Uncheck all channels in the Subscription Panel
+2. Click "Apply Changes"
+3. Mode changes to "idle"
+
+Via API:
+```javascript
+socket.emit('setRuntimeSubscription', {
+  channels: [],
+  users: []
+}, (response) => {
+  // response.data.mode === "idle"
+});
+```
+
+**How to Exit Idle Mode**:
+
+Simply select channels and apply:
+```javascript
+socket.emit('setRuntimeSubscription', {
+  channels: ['all'],
+  users: []
+}, (response) => {
+  // response.data.mode === "active"
+});
+```
+
+### Usage Examples
+
+#### Example 1: View Current Subscription
+
+```javascript
+socket.emit('getRuntimeSubscription', (response) => {
+  if (response.success) {
+    console.log('Channels:', response.data.channels);
+    console.log('Users:', response.data.users);
+    console.log('Mode:', response.data.mode);
+    console.log('Source:', response.data.source);
+    console.log('Updated:', response.data.updatedAt);
+  }
+});
+```
+
+#### Example 2: Change Channels
+
+```javascript
+// Switch from all events to tweets only
+socket.emit('setRuntimeSubscription', {
+  channels: ['tweets'],
+  users: ['elonmusk', 'vitalikbuterin']
+}, (response) => {
+  if (response.success) {
+    console.log('Now monitoring tweets only');
+  }
+});
+```
+
+#### Example 3: Add User Filters
+
+```javascript
+// Add user filters to reduce event volume
+socket.emit('setRuntimeSubscription', {
+  channels: ['all'],
+  users: ['elonmusk', 'vitalikbuterin', 'cz_binance']
+}, (response) => {
+  if (response.success) {
+    console.log('Now monitoring 3 users only');
+  }
+});
+```
+
+#### Example 4: Enter Idle Mode
+
+```javascript
+// Pause monitoring
+socket.emit('setRuntimeSubscription', {
+  channels: [],
+  users: []
+}, (response) => {
+  if (response.success) {
+    console.log('Entered idle mode - no events will be received');
+  }
+});
+```
+
+#### Example 5: Listen for Updates
+
+```javascript
+// Listen for subscription changes from other clients
+socket.on('runtimeSubscriptionUpdated', (state) => {
+  console.log('Subscription updated by another client');
+  console.log('New channels:', state.channels);
+  console.log('New users:', state.users);
+  // Update UI to reflect new state
+});
+```
+
+### Global vs Local Filters
+
+It's important to understand the difference between global subscription and local dashboard filters:
+
+**Global Subscription** (Runtime Subscription Management):
+- Affects all outputs: CLI, Dashboard, Alerts
+- Filters at the actor level (reduces events delivered)
+- Reduces costs (fewer events = lower charges)
+- Changes broadcast to all connected clients
+- Managed via Subscription Panel in dashboard
+
+**Local Dashboard Filters** (Client-Side):
+- Affects only the current dashboard view
+- Filters after events are received
+- No cost impact (events already delivered)
+- Not shared with other clients
+- Managed via filter controls in dashboard sidebar
+
+**Example**:
+
+```
+Global Subscription: users=["elonmusk", "vitalikbuterin"]
+         ↓
+Actor sends only these 2 users' events
+         ↓
+Dashboard receives events from 2 users
+         ↓
+Local Filter: keywords=["bitcoin"]
+         ↓
+Dashboard displays only bitcoin-related events
+```
+
+**Best Practice**: Use global subscription to control event volume and costs, then use local filters for UI refinement.
+
+### Copying Local Selections to Global Subscription
+
+The dashboard provides a convenient "Use selected users" feature to copy your local filter selections to the global upstream subscription:
+
+**Workflow**:
+1. Select users in the left sidebar (Local Filters section)
+2. Navigate to the Subscription Panel (Global Subscription section)
+3. Click "Use selected users (N)" button where N is the count of selected users
+4. Review the copied users in the upstream draft
+5. Click "Apply Changes" to update the global subscription
+
+**Important Notes**:
+- This is a one-time copy operation, not automatic synchronization
+- Local selections do NOT auto-sync to upstream subscription
+- You must manually click "Use selected users" to copy selections
+- After copying, you still need to click "Apply Changes" to activate
+- The copy operation normalizes usernames (trim, lowercase, unique, sort)
+
+**Example Workflow**:
+
+```
+Step 1: Select users in left sidebar
+  Local Filters: ["elonmusk", "vitalikbuterin", "cz_binance"]
+         ↓
+Step 2: Click "Use selected users (3)"
+  Upstream Draft: ["cz_binance", "elonmusk", "vitalikbuterin"] (normalized)
+         ↓
+Step 3: Click "Apply Changes"
+  Global Subscription: ["cz_binance", "elonmusk", "vitalikbuterin"]
+         ↓
+Actor now sends only these 3 users' events
+```
+
+**Why Manual Copy?**:
+- Prevents accidental global changes from local experimentation
+- Gives you control over when to apply cost-affecting changes
+- Allows you to review and adjust before applying
+- Maintains clear separation between local and global scopes
+
+**Additional Features**:
+- "Clear upstream users" button to quickly remove all upstream user filters
+- Visual distinction between Local and Global sections in the dashboard
+- Warning banners explaining the difference and global impact
+
+### Persistence and Configuration
+
+**Runtime Changes Are Temporary**:
+- Runtime subscription changes do not persist across restarts
+- After restart, the application loads subscription from configuration file
+- The `source` field indicates origin: "config" (from file) or "runtime" (modified)
+
+**Making Changes Permanent**:
+
+To make runtime changes permanent, edit your configuration file:
+
+1. Note the current runtime subscription state
+2. Edit `.env` or `config/config.json`
+3. Update `CHANNELS` and `USERS` to match desired state
+4. Restart the application
+
+**Example**:
+
+```env
+# Before restart (runtime changes)
+# channels: ["tweets"], users: ["elonmusk"]
+
+# Edit .env to make permanent
+CHANNELS=tweets
+USERS=elonmusk
+
+# After restart
+# source: "config", channels: ["tweets"], users: ["elonmusk"]
+```
+
+See [Configuration Guide](docs/CONFIGURATION.md) for details on making changes permanent.
+
 ## Configuration
 
 The application supports three configuration methods with the following priority:

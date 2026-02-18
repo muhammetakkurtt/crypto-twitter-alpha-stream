@@ -825,17 +825,504 @@ socket.on('active-users', (data) => {
 
 #### Client-to-Server Messages
 
-Currently, the dashboard is receive-only and does not send messages to the server. All filtering and configuration is done via environment variables or config files.
+##### 1. `getRuntimeSubscription`
 
-**Future Enhancement**: Client-side filter updates could be implemented by adding client-to-server events like:
+Requests the current runtime subscription state from the server.
+
+**Direction**: Client → Server
+
+**Parameters**: None
+
+**Response** (via callback):
+
+```typescript
+{
+  success: boolean,
+  data?: RuntimeSubscriptionState,
+  error?: string
+}
+```
+
+**RuntimeSubscriptionState**:
+
+```typescript
+{
+  channels: Channel[],           // Active subscription channels
+  users: string[],               // User filters (empty = all users)
+  mode: 'active' | 'idle',       // Subscription mode
+  source: 'config' | 'runtime',  // Origin of current state
+  updatedAt: string              // ISO 8601 timestamp
+}
+```
+
+**Example**:
 
 ```javascript
-// Not currently implemented
-socket.emit('update-filters', {
-  users: ['elonmusk', 'vitalikbuterin'],
-  keywords: ['bitcoin', 'ethereum']
+socket.emit('getRuntimeSubscription', (response) => {
+  if (response.success) {
+    console.log('Current subscription:', response.data);
+  } else {
+    console.error('Error:', response.error);
+  }
 });
 ```
+
+**Example Response**:
+
+```json
+{
+  "success": true,
+  "data": {
+    "channels": ["all"],
+    "users": ["elonmusk", "vitalikbuterin"],
+    "mode": "active",
+    "source": "runtime",
+    "updatedAt": "2024-01-15T14:30:22.000Z"
+  }
+}
+```
+
+**Error Responses**:
+
+```json
+{
+  "error": "StreamCore not initialized"
+}
+```
+
+##### 2. `setRuntimeSubscription`
+
+Updates the runtime subscription configuration. Only available to control clients (localhost connections).
+
+**Direction**: Client → Server
+
+**Security**: Control clients only (loopback addresses: 127.0.0.1, ::1, localhost)
+
+**Parameters**:
+
+```typescript
+{
+  channels: Channel[],  // New channels (empty array = idle mode)
+  users: string[]       // New user filters (empty array = all users)
+}
+```
+
+**Response** (via callback):
+
+```typescript
+{
+  success: boolean,
+  data?: RuntimeSubscriptionState,
+  error?: string
+}
+```
+
+**Example**:
+
+```javascript
+socket.emit('setRuntimeSubscription', {
+  channels: ['tweets', 'following'],
+  users: ['elonmusk', 'vitalikbuterin', 'cz_binance']
+}, (response) => {
+  if (response.success) {
+    console.log('Subscription updated:', response.data);
+  } else {
+    console.error('Error:', response.error);
+  }
+});
+```
+
+**Example Success Response**:
+
+```json
+{
+  "success": true,
+  "data": {
+    "channels": ["tweets", "following"],
+    "users": ["elonmusk", "vitalikbuterin", "cz_binance"],
+    "mode": "active",
+    "source": "runtime",
+    "updatedAt": "2024-01-15T14:35:10.000Z"
+  }
+}
+```
+
+**Error Responses**:
+
+```json
+{
+  "error": "Forbidden: subscription modifications only allowed from local control clients"
+}
+```
+
+```json
+{
+  "error": "Invalid payload: channels array required"
+}
+```
+
+```json
+{
+  "error": "Another subscription update is already in progress"
+}
+```
+
+```json
+{
+  "error": "Cannot update subscription: connection state is disconnected"
+}
+```
+
+```json
+{
+  "error": "Invalid channel: invalid_channel"
+}
+```
+
+**Idle Mode**: Setting an empty channels array transitions to idle mode:
+
+```javascript
+socket.emit('setRuntimeSubscription', {
+  channels: [],
+  users: []
+}, (response) => {
+  // response.data.mode will be "idle"
+});
+```
+
+**Security Note - Control Client Detection**:
+
+⚠️ **Important**: The control client check uses `socket.handshake.address` to determine if a connection originates from localhost. This implementation has limitations in certain deployment scenarios:
+
+**How It Works**:
+- The server checks if the client's IP address matches loopback addresses: `127.0.0.1`, `::1`, `::ffff:127.0.0.1`, or `localhost`
+- Connections from these addresses are classified as "control clients" and can modify subscriptions
+- All other connections are "read-only clients" and can only view subscription state
+
+**Limitations**:
+1. **Reverse Proxies**: If the application is behind a reverse proxy (nginx, Apache, etc.), `socket.handshake.address` will show the proxy's IP address, not the original client's IP
+2. **X-Forwarded-For Not Checked**: The implementation does NOT check the `X-Forwarded-For` header, which means:
+   - Remote clients connecting through a proxy may appear as local if the proxy is on localhost
+   - True client IP addresses are not considered when behind a proxy
+3. **SSH Tunnels**: Clients connecting via SSH port forwarding will appear as localhost connections and gain control access
+4. **Docker/Container Networks**: Container networking may affect IP address detection depending on network configuration
+
+**Deployment Best Practices**:
+
+For production deployments where security is critical:
+
+1. **Direct Connection Only**: Deploy the dashboard server without a reverse proxy, or ensure the proxy preserves client IP addresses
+2. **Firewall Rules**: Use firewall rules to restrict access to the dashboard port (default: 3000) to trusted networks only
+3. **VPN/Private Network**: Deploy on a private network or VPN where all connections are from trusted sources
+4. **SSH Tunnel**: If remote access is needed, use SSH tunneling to forward the port securely:
+   ```bash
+   ssh -L 3000:localhost:3000 user@server
+   ```
+5. **Authentication Layer**: Consider adding an authentication layer (API keys, OAuth, etc.) in front of the dashboard for production use
+6. **Network Segmentation**: Deploy the dashboard on a management network separate from public-facing services
+
+**Example Scenarios**:
+
+✅ **Secure**: Direct connection from localhost
+```
+Client (127.0.0.1) → Dashboard Server
+Result: Control client, can modify subscriptions
+```
+
+✅ **Secure**: SSH tunnel from remote machine
+```
+Remote Client → SSH Tunnel → localhost:3000 → Dashboard Server
+Result: Appears as 127.0.0.1, control client access
+```
+
+⚠️ **Potentially Insecure**: Reverse proxy without proper configuration
+```
+Remote Client (192.168.1.100) → Nginx (localhost) → Dashboard Server
+Result: Server sees nginx's localhost IP, grants control access
+```
+
+⚠️ **Potentially Insecure**: Docker bridge network
+```
+Remote Client → Docker Host → Container (172.17.0.1) → Dashboard Server
+Result: Depends on Docker network configuration
+```
+
+**Checking Your Configuration**:
+
+To verify how your deployment detects client addresses:
+
+1. Connect to the dashboard from different sources (localhost, remote, proxy)
+2. Check the server logs for client classification:
+   ```
+   [DashboardOutput] Client abc123 is CONTROL
+   [DashboardOutput] Client def456 is READ-ONLY
+   ```
+3. Test subscription modification from each source to confirm access control
+
+**Alternative Security Approaches**:
+
+If the IP-based check doesn't meet your security requirements, consider:
+
+1. **Environment-Based Control**: Disable runtime subscription modifications entirely in production via environment variable
+2. **API Key Authentication**: Require an API key for subscription modifications
+3. **Role-Based Access Control**: Implement user authentication with role-based permissions
+4. **Audit Logging**: Log all subscription modification attempts with client details for security monitoring
+
+##### 3. `runtimeSubscriptionUpdated` (Broadcast)
+
+Broadcast event sent to all connected clients when the runtime subscription is successfully updated.
+
+**Direction**: Server → All Clients
+
+**Trigger**: After successful `setRuntimeSubscription` call
+
+**Payload**:
+
+```typescript
+RuntimeSubscriptionState
+```
+
+**Example**:
+
+```javascript
+socket.on('runtimeSubscriptionUpdated', (state) => {
+  console.log('Subscription updated by another client:', state);
+  // Update UI to reflect new subscription state
+});
+```
+
+**Example Payload**:
+
+```json
+{
+  "channels": ["tweets"],
+  "users": ["elonmusk"],
+  "mode": "active",
+  "source": "runtime",
+  "updatedAt": "2024-01-15T14:40:55.000Z"
+}
+```
+
+**Use Cases**:
+- Synchronize subscription state across multiple dashboard instances
+- Show notifications when subscription changes
+- Update UI to reflect current subscription without polling
+
+---
+
+### Frontend UX Pattern: Copying Local Selections to Global Subscription
+
+The dashboard implements a convenient UX pattern for copying local filter selections to the global upstream subscription. This feature uses the existing `setRuntimeSubscription` API without requiring any new backend endpoints.
+
+#### Overview
+
+The "Use selected users" feature allows users to:
+1. Select users in the Local Filters section (left sidebar)
+2. Copy those selections to the Global Subscription draft with one click
+3. Review and adjust the copied selections before applying
+4. Apply changes to update the global subscription
+
+**Important**: This is a manual copy operation, not automatic synchronization. Local selections do NOT auto-sync to upstream subscription.
+
+#### Implementation Details
+
+**Frontend Store Method**:
+
+The subscription store provides a `copyFromLocalSelected` method:
+
+```typescript
+// In subscription.svelte.ts
+copyFromLocalSelected(users: string[]): void {
+  // Normalize users (trim, lowercase, unique, sort)
+  const normalized = [...new Set(
+    users.map(u => u.trim().toLowerCase())
+  )].sort();
+  
+  // Update staged users (draft state)
+  this.stagedUsers = normalized;
+  // Does NOT trigger network call - only updates draft
+}
+```
+
+**UI Integration**:
+
+The SubscriptionPanel component integrates with the filters store:
+
+```typescript
+// In SubscriptionPanel.svelte
+import { filtersStore } from '$lib/stores/filters.svelte';
+import { subscriptionStore } from '$lib/stores/subscription.svelte';
+
+function copyFromLocal() {
+  // Get selected users from local filters
+  const selectedUsers = filtersStore.users;
+  
+  // Copy to upstream draft
+  subscriptionStore.copyFromLocalSelected(selectedUsers);
+  
+  // Show confirmation
+  toastStore.info(`Copied ${selectedUsers.length} users to upstream draft`);
+}
+```
+
+**Button State**:
+
+```svelte
+<button
+  onclick={copyFromLocal}
+  disabled={filtersStore.users.length === 0}
+>
+  Use selected users ({filtersStore.users.length})
+</button>
+```
+
+#### User Workflow
+
+**Step 1: Select Users Locally**
+- User selects users in the left sidebar (Local Filters)
+- These selections only affect the current dashboard view
+- No network calls are made
+
+**Step 2: Copy to Upstream Draft**
+- User clicks "Use selected users (N)" button
+- Frontend calls `subscriptionStore.copyFromLocalSelected(users)`
+- Users are normalized and added to staged state
+- No network call yet - changes are in draft
+
+**Step 3: Review and Apply**
+- User reviews the copied users in the Subscription Panel
+- User can adjust or clear the selections
+- User clicks "Apply Changes" to commit
+- Frontend calls `socketStore.setRuntimeSubscription(payload)`
+- Server updates global subscription
+- All connected clients receive `runtimeSubscriptionUpdated` broadcast
+
+#### Example Flow
+
+```javascript
+// Step 1: User selects users in local filters
+filtersStore.setUsers(['elonmusk', 'vitalikbuterin', 'cz_binance']);
+
+// Step 2: User clicks "Use selected users"
+subscriptionStore.copyFromLocalSelected(['elonmusk', 'vitalikbuterin', 'cz_binance']);
+// Result: stagedUsers = ['cz_binance', 'elonmusk', 'vitalikbuterin'] (normalized)
+
+// Step 3: User clicks "Apply Changes"
+socket.emit('setRuntimeSubscription', {
+  channels: subscriptionStore.stagedChannels,
+  users: subscriptionStore.stagedUsers
+}, (response) => {
+  if (response.success) {
+    // Server broadcasts runtimeSubscriptionUpdated to all clients
+    // All dashboards update their applied state
+  }
+});
+```
+
+#### API Calls
+
+The copy feature uses the existing `setRuntimeSubscription` API:
+
+**Request**:
+```json
+{
+  "channels": ["all"],
+  "users": ["cz_binance", "elonmusk", "vitalikbuterin"]
+}
+```
+
+**Response**:
+```json
+{
+  "success": true,
+  "data": {
+    "channels": ["all"],
+    "users": ["cz_binance", "elonmusk", "vitalikbuterin"],
+    "mode": "active",
+    "source": "runtime",
+    "updatedAt": "2024-01-15T14:45:30.000Z"
+  }
+}
+```
+
+**Broadcast** (to all clients):
+```json
+{
+  "channels": ["all"],
+  "users": ["cz_binance", "elonmusk", "vitalikbuterin"],
+  "mode": "active",
+  "source": "runtime",
+  "updatedAt": "2024-01-15T14:45:30.000Z"
+}
+```
+
+#### Additional Features
+
+**Clear Upstream Users**:
+
+```typescript
+// In subscription.svelte.ts
+clearUpstreamUsers(): void {
+  this.stagedUsers = [];
+}
+```
+
+```svelte
+<button onclick={() => subscriptionStore.clearUpstreamUsers()}>
+  Clear upstream users
+</button>
+```
+
+**Visual Distinction**:
+
+The dashboard clearly separates Local and Global sections:
+
+```
+┌─────────────────────────────────────┐
+│ Left Sidebar                        │
+├─────────────────────────────────────┤
+│ Local Filters                       │
+│ (Dashboard view only)               │
+│ ☑ elonmusk                          │
+│ ☑ vitalikbuterin                    │
+│ ☐ cz_binance                        │
+└─────────────────────────────────────┘
+
+┌─────────────────────────────────────┐
+│ Right Sidebar                       │
+├─────────────────────────────────────┤
+│ Global Subscription                 │
+│ (Affects CLI + Dashboard + Alerts)  │
+│                                     │
+│ [Use selected users (2)]            │
+│ [Clear upstream users]              │
+│                                     │
+│ Upstream users:                     │
+│ elonmusk, vitalikbuterin            │
+│                                     │
+│ [Apply Changes] [Discard]           │
+└─────────────────────────────────────┘
+```
+
+#### Design Rationale
+
+**Why Manual Copy?**
+- Prevents accidental global changes from local experimentation
+- Gives users control over cost-affecting changes
+- Allows review and adjustment before applying
+- Maintains clear separation between local and global scopes
+
+**Why No Auto-Sync?**
+- Local filters are for UI refinement and exploration
+- Global subscription affects costs and all outputs
+- Users should explicitly opt-in to global changes
+- Reduces risk of unintended subscription modifications
+
+**Why Staged-Apply Pattern?**
+- Provides preview of changes before committing
+- Allows batch modifications (channels + users)
+- Supports atomic updates (all or nothing)
+- Enables discard/revert functionality
 
 ---
 

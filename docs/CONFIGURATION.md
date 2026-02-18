@@ -1052,6 +1052,257 @@ ALERT_RATE_LIMIT=50  # Adjust based on your service limits
 
 ---
 
+## Runtime Subscription Management
+
+The application supports runtime modification of subscription parameters through the dashboard interface. This section explains how runtime changes interact with configuration files.
+
+### Runtime vs Configuration
+
+**Configuration File** (`.env` or `config.json`):
+- Defines the initial subscription state at startup
+- Persists across restarts
+- Source field: "config"
+
+**Runtime Changes** (via dashboard):
+- Modify subscription without restarting
+- Temporary - do not persist across restarts
+- Source field: "runtime"
+
+### How Runtime Changes Work
+
+When you modify the subscription via the dashboard:
+
+1. **Immediate Effect**: Changes are applied immediately to the active connection
+2. **Broadcast**: All connected dashboards receive the update
+3. **Temporary**: Changes are stored in memory only
+4. **Restart Behavior**: After restart, the application reverts to configuration file settings
+
+**Example Flow**:
+
+```
+Startup:
+  Load from .env: CHANNELS=all, USERS=elonmusk
+  State: { channels: ["all"], users: ["elonmusk"], source: "config" }
+         ↓
+Runtime Change (via dashboard):
+  User changes to: channels=["tweets"], users=["elonmusk", "vitalikbuterin"]
+  State: { channels: ["tweets"], users: ["elonmusk", "vitalikbuterin"], source: "runtime" }
+         ↓
+Restart:
+  Load from .env: CHANNELS=all, USERS=elonmusk
+  State: { channels: ["all"], users: ["elonmusk"], source: "config" }
+  (Runtime changes are lost)
+```
+
+### Source Field
+
+The `source` field in the subscription state indicates the origin of the current configuration:
+
+**"config"**:
+- Subscription loaded from configuration file at startup
+- No runtime modifications have been made
+- Matches `.env` or `config.json` settings
+
+**"runtime"**:
+- Subscription modified via dashboard
+- May differ from configuration file
+- Will revert to "config" after restart
+
+**Checking Source**:
+
+```javascript
+socket.emit('getRuntimeSubscription', (response) => {
+  if (response.data.source === 'config') {
+    console.log('Using configuration file settings');
+  } else {
+    console.log('Modified at runtime - will revert after restart');
+  }
+});
+```
+
+### Making Runtime Changes Permanent
+
+Runtime changes are temporary by design. To make changes permanent, you must update your configuration file.
+
+**Step 1: Note Current Runtime State**
+
+Via dashboard or API:
+```javascript
+socket.emit('getRuntimeSubscription', (response) => {
+  console.log('Current channels:', response.data.channels);
+  console.log('Current users:', response.data.users);
+});
+```
+
+**Step 2: Update Configuration File**
+
+Edit `.env`:
+```env
+# Update to match runtime state
+CHANNELS=tweets,following
+USERS=elonmusk,vitalikbuterin,cz_binance
+```
+
+Or edit `config/config.json`:
+```json
+{
+  "apify": {
+    "channels": ["tweets", "following"]
+  },
+  "filters": {
+    "users": ["elonmusk", "vitalikbuterin", "cz_binance"]
+  }
+}
+```
+
+**Step 3: Restart Application**
+
+```bash
+npm start
+```
+
+After restart:
+- Subscription loads from configuration file
+- Source field changes to "config"
+- Changes are now permanent
+
+### Configuration Priority with Runtime Changes
+
+The configuration priority system applies only at startup:
+
+```
+Startup: Environment Variables > config.json > Default Values
+Runtime: Dashboard changes override everything (temporarily)
+Restart: Back to startup priority
+```
+
+**Example**:
+
+```env
+# .env
+CHANNELS=all
+USERS=elonmusk
+```
+
+```json
+// config.json
+{
+  "apify": {
+    "channels": ["tweets"]
+  }
+}
+```
+
+**At Startup**:
+- Environment variable wins: `channels: ["all"]`
+- Source: "config"
+
+**After Runtime Change**:
+- Dashboard sets: `channels: ["following"]`
+- Source: "runtime"
+- Configuration files are ignored (temporarily)
+
+**After Restart**:
+- Environment variable wins again: `channels: ["all"]`
+- Source: "config"
+- Runtime changes are lost
+
+### Best Practices
+
+**1. Use Runtime Changes for Experimentation**
+
+Runtime changes are perfect for testing different configurations:
+- Try different channel combinations
+- Test user filters
+- Experiment with idle mode
+- No need to restart or edit files
+
+**2. Update Configuration Files for Production**
+
+Once you've found a configuration that works:
+- Update `.env` or `config.json`
+- Restart to verify configuration loads correctly
+- Document the change in version control
+
+**3. Monitor Source Field**
+
+Check the source field to know if runtime changes are active:
+```javascript
+socket.on('runtimeSubscriptionUpdated', (state) => {
+  if (state.source === 'runtime') {
+    console.warn('Runtime changes active - will revert after restart');
+  }
+});
+```
+
+**4. Document Runtime Changes**
+
+If you make runtime changes in production:
+- Document what was changed and why
+- Update configuration files before next restart
+- Notify team members of temporary changes
+
+### Troubleshooting Runtime Changes
+
+**Problem**: Runtime changes not persisting after restart
+
+**Solution**: This is expected behavior. Runtime changes are temporary. Update configuration files to make changes permanent.
+
+**Problem**: Configuration file changes not taking effect
+
+**Solution**: Runtime changes override configuration. Restart the application to load configuration file settings.
+
+**Problem**: Source field shows "runtime" but I didn't make changes
+
+**Solution**: Another client (dashboard instance) made runtime changes. Check with team members or restart to revert to configuration.
+
+**Problem**: Can't modify subscription from dashboard
+
+**Solution**: Only control clients (localhost) can modify subscriptions. Remote clients are read-only for security.
+
+### Example Scenarios
+
+#### Scenario 1: Temporary Cost Reduction
+
+You want to temporarily reduce costs without editing configuration:
+
+1. Open dashboard (localhost)
+2. Change users to a smaller set
+3. Apply changes
+4. Monitor for desired period
+5. Restart to revert to full configuration
+
+#### Scenario 2: Testing New Filters
+
+You want to test new user filters before committing:
+
+1. Make runtime changes via dashboard
+2. Monitor events for a few hours
+3. If satisfied, update `.env` file
+4. Restart to make permanent
+
+#### Scenario 3: Emergency Pause
+
+You need to pause monitoring immediately:
+
+1. Open dashboard
+2. Uncheck all channels (idle mode)
+3. Apply changes
+4. Monitoring pauses immediately
+5. Restart later to resume with configuration
+
+#### Scenario 4: Multi-Dashboard Coordination
+
+Multiple team members have dashboards open:
+
+1. Team member A makes runtime change
+2. All dashboards receive broadcast
+3. All dashboards show updated state
+4. Source field shows "runtime" for everyone
+5. After restart, all revert to configuration
+
+---
+
 ## Best Practices
 
 ### Security
