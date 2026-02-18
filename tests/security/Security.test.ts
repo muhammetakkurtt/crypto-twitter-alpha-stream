@@ -641,37 +641,25 @@ describe('Security Measures - Unit Tests', () => {
 
       // Wrap console once
       LogSanitizer.wrapConsole();
+      const wrappedOnce = console.log;
       
-      // Measure time for single wrap
-      const start1 = Date.now();
-      for (let i = 0; i < 1000; i++) {
-        console.log(`Test message ${i} with ${token}`);
-      }
-      const time1 = Date.now() - start1;
+      // Try to wrap multiple more times (should be no-op due to idempotency)
+      LogSanitizer.wrapConsole();
+      LogSanitizer.wrapConsole();
+      LogSanitizer.wrapConsole();
+      LogSanitizer.wrapConsole();
+      LogSanitizer.wrapConsole();
+      const wrappedMultiple = console.log;
 
-      // Reset and wrap multiple times
-      mockLog.mockClear();
-      // @ts-ignore - accessing private static field for testing
-      LogSanitizer.isConsoleWrapped = false;
-      console.log = mockLog;
+      // The function reference should be identical (not re-wrapped)
+      expect(wrappedOnce).toBe(wrappedMultiple);
 
-      LogSanitizer.wrapConsole();
-      LogSanitizer.wrapConsole();
-      LogSanitizer.wrapConsole();
-      LogSanitizer.wrapConsole();
-      LogSanitizer.wrapConsole();
-
-      // Measure time for multiple wraps (should be same since idempotent)
-      const start2 = Date.now();
-      for (let i = 0; i < 1000; i++) {
-        console.log(`Test message ${i} with ${token}`);
-      }
-      const time2 = Date.now() - start2;
-
-      // Time should be similar (no significant degradation from layering)
-      // Since we're idempotent, times should be nearly identical
-      // Allow up to 50% difference due to timing variations
-      expect(time2).toBeLessThan(time1 * 1.5);
+      // Verify sanitization still works correctly
+      console.log(`Token: ${token}`);
+      
+      expect(mockLog).toHaveBeenCalled();
+      expect(mockLog.mock.calls[0][0]).toContain('[REDACTED]');
+      expect(mockLog.mock.calls[0][0]).not.toContain(token);
     });
 
     it('should work correctly with ConfigManager reload', () => {

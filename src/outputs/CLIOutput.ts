@@ -120,14 +120,18 @@ export class CLIOutput {
           text = `profile ${action}`;
         }
         
-      } else if (event.type === 'follow_created') {
-        // Extract target from nested structure
+      } else if (event.type === 'follow_created' || event.type === 'follow_updated') {
+        // Extract target and action from nested structure
         const targetUsername = (event.data as any).following?.handle || 'unknown';
-        text = `followed @${targetUsername}`;
+        const action = (event.data as any).action || '';
         
-      } else if (event.type === 'follow_updated') {
-        const targetUsername = (event.data as any).following?.handle || 'unknown';
-        text = `unfollowed @${targetUsername}`;
+        // Determine if this is a follow or unfollow based on action field
+        const isFollow = event.type === 'follow_created' || 
+                        action === 'created' || 
+                        action === 'follow' ||
+                        action === 'follow_update';
+        
+        text = isFollow ? `followed @${targetUsername}` : `unfollowed @${targetUsername}`;
       }
     } catch (error) {
       // Handle any extraction errors gracefully

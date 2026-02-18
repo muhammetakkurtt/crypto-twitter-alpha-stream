@@ -88,11 +88,11 @@ export function formatAlertMessage(event: TwitterEvent): AlertMessage {
       case 'profile_updated':
       case 'profile_pinned':
         const profileData = event.data as ProfileData;
-        const action = profileData?.action || 'updated';
+        const profileAction = profileData?.action || 'updated';
         if (profileData?.pinned && profileData.pinned.length > 0) {
-          text = `${action}: pinned tweets updated`;
+          text = `${profileAction}: pinned tweets updated`;
         } else {
-          text = `profile ${action}`;
+          text = `profile ${profileAction}`;
         }
         
         // Get user avatar from profile
@@ -100,17 +100,19 @@ export function formatAlertMessage(event: TwitterEvent): AlertMessage {
         break;
         
       case 'follow_created':
-        const followingData = event.data as FollowingData;
-        text = followingData?.following?.handle 
-          ? `followed @${followingData.following.handle}`
-          : 'followed a user';
-        break;
-        
       case 'follow_updated':
-        const unfollowingData = event.data as FollowingData;
-        text = unfollowingData?.following?.handle 
-          ? `unfollowed @${unfollowingData.following.handle}`
-          : 'unfollowed a user';
+        const followingData = event.data as FollowingData;
+        const followAction = followingData?.action || '';
+        
+        // Determine if this is a follow or unfollow based on action field
+        const isFollow = event.type === 'follow_created' || 
+                        followAction === 'created' || 
+                        followAction === 'follow' ||
+                        followAction === 'follow_update';
+        
+        text = followingData?.following?.handle 
+          ? (isFollow ? `followed @${followingData.following.handle}` : `unfollowed @${followingData.following.handle}`)
+          : (isFollow ? 'followed a user' : 'unfollowed a user');
         break;
     }
   } catch (error) {
