@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { socketStore } from './socket.svelte';
 import { eventsStore } from './events.svelte';
 import { toastStore } from './toast.svelte';
-import type { TwitterEvent } from '$lib/types';
+import { subscriptionStore } from './subscription.svelte';
+import type { TwitterEvent, RuntimeSubscriptionState, UpdateRuntimeSubscriptionPayload } from '$lib/types';
 
 vi.mock('socket.io-client', () => {
   const mockSocket = {
@@ -274,5 +275,318 @@ describe('SocketStore Integration Tests', () => {
       reconnectionDelayMax: 5000,
       timeout: 20000
     });
+  });
+});
+
+describe('Runtime Subscription Methods', () => {
+  beforeEach(() => {
+    eventsStore.clear();
+    toastStore.clear();
+    socketStore.disconnect();
+    vi.clearAllMocks();
+  });
+  
+  afterEach(() => {
+    socketStore.disconnect();
+  });
+  
+  it('should emit getRuntimeSubscription event and resolve with state', async () => {
+    socketStore.connect();
+    
+    const mockState: RuntimeSubscriptionState = {
+      channels: ['all', 'tweets'],
+      users: ['testuser'],
+      mode: 'active',
+      source: 'runtime',
+      updatedAt: '2024-01-01T00:00:00.000Z'
+    };
+    
+    // Mock the emit method to call the callback with success response
+    const mockEmit = vi.fn((event: string, ...args: any[]) => {
+      if (event === 'getRuntimeSubscription') {
+        const callback = args[0];
+        callback({ success: true, data: mockState });
+      }
+      return socketStore.socket;
+    });
+    
+    if (socketStore.socket) {
+      socketStore.socket.emit = mockEmit as any;
+    }
+    
+    const result = await socketStore.getRuntimeSubscription();
+    
+    expect(mockEmit).toHaveBeenCalledWith('getRuntimeSubscription', expect.any(Function));
+    expect(result).toEqual(mockState);
+  });
+  
+  it('should reject getRuntimeSubscription when socket is not connected', async () => {
+    socketStore.disconnect();
+    
+    await expect(socketStore.getRuntimeSubscription()).rejects.toThrow('Socket not connected');
+  });
+  
+  it('should reject getRuntimeSubscription when server returns error', async () => {
+    socketStore.connect();
+    
+    const mockEmit = vi.fn((event: string, ...args: any[]) => {
+      if (event === 'getRuntimeSubscription') {
+        const callback = args[0];
+        callback({ error: 'StreamCore not initialized' });
+      }
+      return socketStore.socket;
+    });
+    
+    if (socketStore.socket) {
+      socketStore.socket.emit = mockEmit as any;
+    }
+    
+    await expect(socketStore.getRuntimeSubscription()).rejects.toThrow('StreamCore not initialized');
+  });
+  
+  it('should emit setRuntimeSubscription event with payload and resolve with new state', async () => {
+    socketStore.connect();
+    
+    const payload: UpdateRuntimeSubscriptionPayload = {
+      channels: ['tweets', 'following'],
+      users: ['user1', 'user2']
+    };
+    
+    const mockNewState: RuntimeSubscriptionState = {
+      channels: ['following', 'tweets'],
+      users: ['user1', 'user2'],
+      mode: 'active',
+      source: 'runtime',
+      updatedAt: '2024-01-01T00:00:00.000Z'
+    };
+    
+    const mockEmit = vi.fn((event: string, ...args: any[]) => {
+      if (event === 'setRuntimeSubscription') {
+        const callback = args[1];
+        callback({ success: true, data: mockNewState });
+      }
+      return socketStore.socket;
+    });
+    
+    if (socketStore.socket) {
+      socketStore.socket.emit = mockEmit as any;
+    }
+    
+    const result = await socketStore.setRuntimeSubscription(payload);
+    
+    expect(mockEmit).toHaveBeenCalledWith('setRuntimeSubscription', payload, expect.any(Function));
+    expect(result).toEqual(mockNewState);
+  });
+  
+  it('should reject setRuntimeSubscription when socket is not connected', async () => {
+    socketStore.disconnect();
+    
+    const payload: UpdateRuntimeSubscriptionPayload = {
+      channels: ['tweets'],
+      users: []
+    };
+    
+    await expect(socketStore.setRuntimeSubscription(payload)).rejects.toThrow('Socket not connected');
+  });
+  
+  it('should reject setRuntimeSubscription when server returns error', async () => {
+    socketStore.connect();
+    
+    const payload: UpdateRuntimeSubscriptionPayload = {
+      channels: ['invalid_channel'] as any,
+      users: []
+    };
+    
+    const mockEmit = vi.fn((event: string, ...args: any[]) => {
+      if (event === 'setRuntimeSubscription') {
+        const callback = args[1];
+        callback({ error: 'Invalid channel: invalid_channel' });
+      }
+      return socketStore.socket;
+    });
+    
+    if (socketStore.socket) {
+      socketStore.socket.emit = mockEmit as any;
+    }
+    
+    await expect(socketStore.setRuntimeSubscription(payload)).rejects.toThrow('Invalid channel: invalid_channel');
+  });
+  
+  it('should handle runtimeSubscriptionUpdated broadcast event', () => {
+    socketStore.connect();
+    toastStore.clear();
+    
+    const mockState: RuntimeSubscriptionState = {
+      channels: ['all'],
+      users: [],
+      mode: 'active',
+      source: 'runtime',
+      updatedAt: '2024-01-01T00:00:00.000Z'
+    };
+    
+    const updateHandler = (socketStore.socket?.on as any).mock.calls.find(
+      (call: any[]) => call[0] === 'runtimeSubscriptionUpdated'
+    )?.[1];
+    
+    expect(updateHandler).toBeDefined();
+    
+    if (updateHandler) {
+      updateHandler(mockState);
+      
+      // Verify subscriptionStore was initialized with the new state
+      expect(subscriptionStore.appliedState).toEqual(mockState);
+      expect(subscriptionStore.stagedChannels).toEqual(mockState.channels);
+      expect(subscriptionStore.stagedUsers).toEqual(mockState.users);
+      
+      // Verify toast notification was shown
+      expect(toastStore.toasts).toHaveLength(1);
+      expect(toastStore.toasts[0].type).toBe('info');
+      expect(toastStore.toasts[0].message).toBe('Subscription updated');
+    }
+  });
+  
+  it('should register runtimeSubscriptionUpdated event handler on connect', () => {
+    socketStore.connect();
+    expect(socketStore.socket?.on).toHaveBeenCalledWith('runtimeSubscriptionUpdated', expect.any(Function));
+  });
+  
+  it('should timeout getRuntimeSubscription after 10 seconds if no response', async () => {
+    socketStore.connect();
+    
+    // Mock emit to never call the callback (simulating no response)
+    const mockEmit = vi.fn((_event: string, ..._args: any[]) => {
+      // Don't call the callback - simulate timeout
+      return socketStore.socket;
+    });
+    
+    if (socketStore.socket) {
+      socketStore.socket.emit = mockEmit as any;
+    }
+    
+    // Use fake timers to speed up the test
+    vi.useFakeTimers();
+    
+    const promise = socketStore.getRuntimeSubscription();
+    
+    // Fast-forward time by 10 seconds
+    vi.advanceTimersByTime(10000);
+    
+    await expect(promise).rejects.toThrow('getRuntimeSubscription timeout after 10000ms');
+    
+    vi.useRealTimers();
+  });
+  
+  it('should timeout setRuntimeSubscription after 10 seconds if no response', async () => {
+    socketStore.connect();
+    
+    const payload: UpdateRuntimeSubscriptionPayload = {
+      channels: ['tweets'],
+      users: []
+    };
+    
+    // Mock emit to never call the callback (simulating no response)
+    const mockEmit = vi.fn((_event: string, ..._args: any[]) => {
+      // Don't call the callback - simulate timeout
+      return socketStore.socket;
+    });
+    
+    if (socketStore.socket) {
+      socketStore.socket.emit = mockEmit as any;
+    }
+    
+    // Use fake timers to speed up the test
+    vi.useFakeTimers();
+    
+    const promise = socketStore.setRuntimeSubscription(payload);
+    
+    // Fast-forward time by 10 seconds
+    vi.advanceTimersByTime(10000);
+    
+    await expect(promise).rejects.toThrow('setRuntimeSubscription timeout after 10000ms');
+    
+    vi.useRealTimers();
+  });
+  
+  it('should clear timeout when getRuntimeSubscription receives response', async () => {
+    socketStore.connect();
+    
+    const mockState: RuntimeSubscriptionState = {
+      channels: ['all'],
+      users: [],
+      mode: 'active',
+      source: 'config',
+      updatedAt: '2024-01-01T00:00:00.000Z'
+    };
+    
+    // Mock emit to call callback immediately
+    const mockEmit = vi.fn((event: string, ...args: any[]) => {
+      if (event === 'getRuntimeSubscription') {
+        const callback = args[0];
+        callback({ success: true, data: mockState });
+      }
+      return socketStore.socket;
+    });
+    
+    if (socketStore.socket) {
+      socketStore.socket.emit = mockEmit as any;
+    }
+    
+    vi.useFakeTimers();
+    
+    const promise = socketStore.getRuntimeSubscription();
+    
+    // Response comes immediately, timeout should be cleared
+    const result = await promise;
+    
+    expect(result).toEqual(mockState);
+    
+    // Advance time to verify timeout was cleared (no rejection)
+    vi.advanceTimersByTime(10000);
+    
+    vi.useRealTimers();
+  });
+  
+  it('should clear timeout when setRuntimeSubscription receives response', async () => {
+    socketStore.connect();
+    
+    const payload: UpdateRuntimeSubscriptionPayload = {
+      channels: ['tweets'],
+      users: ['testuser']
+    };
+    
+    const mockState: RuntimeSubscriptionState = {
+      channels: ['tweets'],
+      users: ['testuser'],
+      mode: 'active',
+      source: 'runtime',
+      updatedAt: '2024-01-01T00:00:00.000Z'
+    };
+    
+    // Mock emit to call callback immediately
+    const mockEmit = vi.fn((event: string, ...args: any[]) => {
+      if (event === 'setRuntimeSubscription') {
+        const callback = args[1];
+        callback({ success: true, data: mockState });
+      }
+      return socketStore.socket;
+    });
+    
+    if (socketStore.socket) {
+      socketStore.socket.emit = mockEmit as any;
+    }
+    
+    vi.useFakeTimers();
+    
+    const promise = socketStore.setRuntimeSubscription(payload);
+    
+    // Response comes immediately, timeout should be cleared
+    const result = await promise;
+    
+    expect(result).toEqual(mockState);
+    
+    // Advance time to verify timeout was cleared (no rejection)
+    vi.advanceTimersByTime(10000);
+    
+    vi.useRealTimers();
   });
 });

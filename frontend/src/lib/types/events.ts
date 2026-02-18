@@ -210,3 +210,26 @@ export interface FollowingData {
   };
   others?: any[];
 }
+
+/**
+ * Runtime subscription types
+ */
+
+export type Channel = 'all' | 'tweets' | 'following' | 'profile';
+
+export type RuntimeSubscriptionMode = 'active' | 'idle';
+
+export type RuntimeSubscriptionSource = 'config' | 'runtime';
+
+export interface RuntimeSubscriptionState {
+  channels: Channel[];
+  users: string[];
+  mode: RuntimeSubscriptionMode;
+  source: RuntimeSubscriptionSource;
+  updatedAt: string;
+}
+
+export interface UpdateRuntimeSubscriptionPayload {
+  channels: Channel[];
+  users: string[];
+}

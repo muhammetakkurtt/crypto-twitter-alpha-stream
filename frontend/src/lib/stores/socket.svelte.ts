@@ -2,8 +2,9 @@ import ioClient from 'socket.io-client';
 import { eventsStore } from './events.svelte';
 import { statsStore } from './stats.svelte';
 import { toastStore } from './toast.svelte';
+import { subscriptionStore } from './subscription.svelte';
 import { notifyForImportantEvent } from '$lib/utils/eventNotifications';
-import type { TwitterEvent } from '$lib/types';
+import type { TwitterEvent, RuntimeSubscriptionState, UpdateRuntimeSubscriptionPayload } from '$lib/types';
 
 type Socket = ReturnType<typeof ioClient>;
 type ConnectionStatus = 'connected' | 'disconnected' | 'reconnecting';
@@ -79,6 +80,11 @@ class SocketStore {
     this.socket.on('activeUsers', (users: string[]) => {
       this.activeUsers = users;
     });
+    
+    this.socket.on('runtimeSubscriptionUpdated', (state: RuntimeSubscriptionState) => {
+      subscriptionStore.initialize(state);
+      toastStore.info('Subscription updated');
+    });
   }
   
   disconnect() {
@@ -87,6 +93,60 @@ class SocketStore {
       this.socket = null;
       this.connectionStatus = 'disconnected';
     }
+  }
+  
+  /**
+   * Get current runtime subscription state
+   */
+  async getRuntimeSubscription(): Promise<RuntimeSubscriptionState> {
+    return new Promise((resolve, reject) => {
+      if (!this.socket) {
+        reject(new Error('Socket not connected'));
+        return;
+      }
+
+      // Set up timeout (10 seconds)
+      const timeoutId = setTimeout(() => {
+        reject(new Error('getRuntimeSubscription timeout after 10000ms'));
+      }, 10000);
+
+      this.socket.emit('getRuntimeSubscription', (response: any) => {
+        clearTimeout(timeoutId);
+        if (response.error) {
+          reject(new Error(response.error));
+        } else {
+          resolve(response.data);
+        }
+      });
+    });
+  }
+
+  /**
+   * Update runtime subscription
+   */
+  async setRuntimeSubscription(
+    payload: UpdateRuntimeSubscriptionPayload
+  ): Promise<RuntimeSubscriptionState> {
+    return new Promise((resolve, reject) => {
+      if (!this.socket) {
+        reject(new Error('Socket not connected'));
+        return;
+      }
+
+      // Set up timeout (10 seconds)
+      const timeoutId = setTimeout(() => {
+        reject(new Error('setRuntimeSubscription timeout after 10000ms'));
+      }, 10000);
+
+      this.socket.emit('setRuntimeSubscription', payload, (response: any) => {
+        clearTimeout(timeoutId);
+        if (response.error) {
+          reject(new Error(response.error));
+        } else {
+          resolve(response.data);
+        }
+      });
+    });
   }
 }
 
