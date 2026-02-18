@@ -115,6 +115,12 @@ export class Application {
       await this.initializeOutputs(this.config);
       console.log('✓ Outputs initialized');
 
+      // Step 5.5: Wire StreamCore to DashboardOutput for runtime subscription management
+      if (this.dashboardOutput && this.streamCore) {
+        this.dashboardOutput.setStreamCore(this.streamCore);
+        console.log('✓ StreamCore wired to DashboardOutput');
+      }
+
       // Step 6: Initialize Health Monitor
       if (this.streamCore && this.filterPipeline) {
         console.log('🏥 Initializing Health Monitor...');

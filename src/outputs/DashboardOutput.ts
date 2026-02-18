@@ -9,8 +9,9 @@
 import express, { Express, Request, Response } from 'express';
 import { Server as HTTPServer } from 'http';
 import { Server as SocketIOServer, Socket } from 'socket.io';
-import { TwitterEvent, EventStats, HealthStatus, FilterConfig, isValidEventType } from '../models/types';
+import { TwitterEvent, EventStats, HealthStatus, FilterConfig, isValidEventType, RuntimeSubscriptionState, UpdateRuntimeSubscriptionPayload } from '../models/types';
 import { EventBus } from '../eventbus/EventBus';
+import { StreamCore } from '../streamcore/StreamCore';
 
 export interface DashboardConfig {
   port: number;
@@ -36,6 +37,7 @@ export class DashboardOutput {
   private state: DashboardState;
   private connectedClients: Set<string> = new Set();
   private healthStatusProvider: (() => HealthStatus) | null = null;
+  private streamCore: StreamCore | null = null;
 
   constructor(eventBus: EventBus, config: DashboardConfig) {
     this.eventBus = eventBus;
@@ -176,6 +178,30 @@ export class DashboardOutput {
   }
 
   /**
+   * Set StreamCore reference for runtime subscription management
+   */
+  setStreamCore(streamCore: StreamCore): void {
+    this.streamCore = streamCore;
+  }
+
+  /**
+   * Check if client is a control client (connecting from loopback)
+   */
+  private isControlClient(socket: Socket): boolean {
+    const address = socket.handshake.address;
+    
+    // Check for loopback addresses
+    const loopbackAddresses = [
+      '127.0.0.1',
+      '::1',
+      '::ffff:127.0.0.1',
+      'localhost'
+    ];
+
+    return loopbackAddresses.includes(address);
+  }
+
+  /**
    * Start the dashboard server
    */
   async start(): Promise<void> {
@@ -241,6 +267,12 @@ export class DashboardOutput {
       this.connectedClients.add(clientId);
       console.log(`[DashboardOutput] ✓ Client connected: ${clientId} (total: ${this.connectedClients.size})`);
 
+      // Determine client type
+      const isControl = this.isControlClient(socket);
+      if (process.env.DEBUG === 'true') {
+        console.log(`[DashboardOutput] Client ${clientId} is ${isControl ? 'CONTROL' : 'READ-ONLY'}`);
+      }
+
       // Send current state to newly connected client
       if (process.env.DEBUG === 'true') {
         console.log(`[DashboardOutput] Sending initial state to ${clientId}, events: ${this.state.events.length}`);
@@ -261,6 +293,92 @@ export class DashboardOutput {
       // Handle active users request
       socket.on('requestActiveUsers', () => {
         socket.emit('activeUsers', this.state.activeUsers);
+      });
+
+      // Handle getRuntimeSubscription (all clients)
+      socket.on('getRuntimeSubscription', (callback?: (response: { success?: boolean; data?: RuntimeSubscriptionState; error?: string }) => void) => {
+        try {
+          if (!this.streamCore) {
+            if (callback) {
+              callback({ error: 'StreamCore not initialized' });
+            } else {
+              console.warn('[DashboardOutput] getRuntimeSubscription called without callback');
+            }
+            return;
+          }
+
+          const state: RuntimeSubscriptionState = this.streamCore.getRuntimeSubscriptionState();
+          if (callback) {
+            callback({ success: true, data: state });
+          } else {
+            console.warn('[DashboardOutput] getRuntimeSubscription called without callback');
+          }
+        } catch (error) {
+          if (callback) {
+            callback({ error: (error as Error).message });
+          } else {
+            console.warn('[DashboardOutput] getRuntimeSubscription error without callback:', (error as Error).message);
+          }
+        }
+      });
+
+      // Handle setRuntimeSubscription (control clients only)
+      socket.on('setRuntimeSubscription', async (payload: UpdateRuntimeSubscriptionPayload, callback?: (response: { success?: boolean; data?: RuntimeSubscriptionState; error?: string }) => void) => {
+        try {
+          // Security check
+          if (!isControl) {
+            if (callback) {
+              callback({ 
+                error: 'Forbidden: subscription modifications only allowed from local control clients' 
+              });
+            } else {
+              console.warn('[DashboardOutput] setRuntimeSubscription forbidden without callback');
+            }
+            return;
+          }
+
+          if (!this.streamCore) {
+            if (callback) {
+              callback({ error: 'StreamCore not initialized' });
+            } else {
+              console.warn('[DashboardOutput] setRuntimeSubscription called without callback');
+            }
+            return;
+          }
+
+          // Validate payload
+          if (!payload || !Array.isArray(payload.channels)) {
+            if (callback) {
+              callback({ error: 'Invalid payload: channels array required' });
+            } else {
+              console.warn('[DashboardOutput] setRuntimeSubscription invalid payload without callback');
+            }
+            return;
+          }
+
+          // Update subscription
+          const newState: RuntimeSubscriptionState = await this.streamCore.updateRuntimeSubscription({
+            channels: payload.channels,
+            users: payload.users || []
+          });
+
+          // Broadcast update to all clients
+          this.io!.emit('runtimeSubscriptionUpdated', newState);
+
+          // Send success response
+          if (callback) {
+            callback({ success: true, data: newState });
+          } else {
+            console.warn('[DashboardOutput] setRuntimeSubscription succeeded without callback');
+          }
+
+        } catch (error) {
+          if (callback) {
+            callback({ error: (error as Error).message });
+          } else {
+            console.warn('[DashboardOutput] setRuntimeSubscription error without callback:', (error as Error).message);
+          }
+        }
       });
     });
 
