@@ -7,7 +7,10 @@ import * as fc from 'fast-check';
 import {
   isPostData,
   isProfileData,
-  isFollowingData
+  isFollowingData,
+  Channel,
+  RuntimeSubscriptionMode,
+  RuntimeSubscriptionSource
 } from '../../src/models/types';
 
 describe('Type Guard Property Tests', () => {
@@ -288,6 +291,241 @@ describe('Type Guard Property Tests', () => {
             // Type guard should accept valid nested structure
             const result = isProfileData(profileData);
             return result === true;
+          }
+        ),
+        { numRuns: 100 }
+      );
+    });
+  });
+
+  describe('Property 1: RuntimeSubscriptionState Structure Completeness', () => {
+    /**
+     * For any RuntimeSubscriptionState object, it must contain all required fields 
+     * (channels, users, mode, source, updatedAt) with correct types: channels and 
+     * users as arrays, mode as 'active' or 'idle', source as 'config' or 'runtime',
+     */
+
+    // Generator for valid Channel array
+    const channelArrayArbitrary = fc.array(
+      fc.constantFrom<Channel>('all', 'tweets', 'following', 'profile'),
+      { minLength: 0, maxLength: 4 }
+    ).map(channels => [...new Set(channels)]); // Remove duplicates
+
+    // Generator for valid user array
+    const userArrayArbitrary = fc.array(
+      fc.string({ minLength: 1, maxLength: 15 }),
+      { minLength: 0, maxLength: 10 }
+    );
+
+    // Generator for valid RuntimeSubscriptionMode
+    const modeArbitrary = fc.constantFrom<RuntimeSubscriptionMode>('active', 'idle');
+
+    // Generator for valid RuntimeSubscriptionSource
+    const sourceArbitrary = fc.constantFrom<RuntimeSubscriptionSource>('config', 'runtime');
+
+    // Generator for valid ISO 8601 timestamp
+    const iso8601Arbitrary = fc.integer({ min: 0, max: Date.now() })
+      .map(timestamp => new Date(timestamp).toISOString());
+
+    // Generator for valid RuntimeSubscriptionState
+    const validRuntimeSubscriptionStateArbitrary = fc.record({
+      channels: channelArrayArbitrary,
+      users: userArrayArbitrary,
+      mode: modeArbitrary,
+      source: sourceArbitrary,
+      updatedAt: iso8601Arbitrary
+    });
+
+    it('should have all required fields with correct types', () => {
+      fc.assert(
+        fc.property(validRuntimeSubscriptionStateArbitrary, (state) => {
+          // Check that all required fields exist
+          const hasAllFields = 
+            'channels' in state &&
+            'users' in state &&
+            'mode' in state &&
+            'source' in state &&
+            'updatedAt' in state;
+
+          // Check that channels is an array
+          const channelsIsArray = Array.isArray(state.channels);
+
+          // Check that users is an array
+          const usersIsArray = Array.isArray(state.users);
+
+          // Check that mode is 'active' or 'idle'
+          const modeIsValid = state.mode === 'active' || state.mode === 'idle';
+
+          // Check that source is 'config' or 'runtime'
+          const sourceIsValid = state.source === 'config' || state.source === 'runtime';
+
+          // Check that updatedAt is a valid ISO 8601 timestamp string
+          const updatedAtIsString = typeof state.updatedAt === 'string';
+          const updatedAtIsValidISO = updatedAtIsString && !isNaN(Date.parse(state.updatedAt));
+
+          return hasAllFields &&
+                 channelsIsArray &&
+                 usersIsArray &&
+                 modeIsValid &&
+                 sourceIsValid &&
+                 updatedAtIsValidISO;
+        }),
+        { numRuns: 100 }
+      );
+    });
+
+    it('should have channels array containing only valid Channel values', () => {
+      fc.assert(
+        fc.property(validRuntimeSubscriptionStateArbitrary, (state) => {
+          const validChannels: Channel[] = ['all', 'tweets', 'following', 'profile'];
+          return state.channels.every(channel => validChannels.includes(channel));
+        }),
+        { numRuns: 100 }
+      );
+    });
+
+    it('should have users array containing only strings', () => {
+      fc.assert(
+        fc.property(validRuntimeSubscriptionStateArbitrary, (state) => {
+          return state.users.every(user => typeof user === 'string');
+        }),
+        { numRuns: 100 }
+      );
+    });
+
+    it('should have mode as either active or idle', () => {
+      fc.assert(
+        fc.property(validRuntimeSubscriptionStateArbitrary, (state) => {
+          return state.mode === 'active' || state.mode === 'idle';
+        }),
+        { numRuns: 100 }
+      );
+    });
+
+    it('should have source as either config or runtime', () => {
+      fc.assert(
+        fc.property(validRuntimeSubscriptionStateArbitrary, (state) => {
+          return state.source === 'config' || state.source === 'runtime';
+        }),
+        { numRuns: 100 }
+      );
+    });
+
+    it('should have updatedAt as a valid ISO 8601 timestamp', () => {
+      fc.assert(
+        fc.property(validRuntimeSubscriptionStateArbitrary, (state) => {
+          // Check that it's a string
+          if (typeof state.updatedAt !== 'string') {
+            return false;
+          }
+
+          // Check that it can be parsed as a valid date
+          const parsedDate = Date.parse(state.updatedAt);
+          if (isNaN(parsedDate)) {
+            return false;
+          }
+
+          // Check that it matches ISO 8601 format (relaxed check for various valid formats)
+          // Valid formats include: YYYY-MM-DDTHH:mm:ss.sssZ, YYYY-MM-DDTHH:mm:ssZ, etc.
+          const iso8601Regex = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?Z$/;
+          return iso8601Regex.test(state.updatedAt);
+        }),
+        { numRuns: 100 }
+      );
+    });
+
+    it('should reject objects missing required fields', () => {
+      fc.assert(
+        fc.property(
+          fc.record({
+            channels: fc.option(channelArrayArbitrary, { nil: undefined }),
+            users: fc.option(userArrayArbitrary, { nil: undefined }),
+            mode: fc.option(modeArbitrary, { nil: undefined }),
+            source: fc.option(sourceArbitrary, { nil: undefined }),
+            updatedAt: fc.option(iso8601Arbitrary, { nil: undefined })
+          }).filter(obj => 
+            obj.channels === undefined ||
+            obj.users === undefined ||
+            obj.mode === undefined ||
+            obj.source === undefined ||
+            obj.updatedAt === undefined
+          ),
+          (invalidState) => {
+            // An object missing any required field should not be a valid RuntimeSubscriptionState
+            const hasAllFields = 
+              'channels' in invalidState &&
+              'users' in invalidState &&
+              'mode' in invalidState &&
+              'source' in invalidState &&
+              'updatedAt' in invalidState &&
+              invalidState.channels !== undefined &&
+              invalidState.users !== undefined &&
+              invalidState.mode !== undefined &&
+              invalidState.source !== undefined &&
+              invalidState.updatedAt !== undefined;
+
+            return !hasAllFields;
+          }
+        ),
+        { numRuns: 100 }
+      );
+    });
+
+    it('should reject objects with invalid field types', () => {
+      fc.assert(
+        fc.property(
+          fc.oneof(
+            // Invalid channels (not an array)
+            fc.record({
+              channels: fc.oneof(fc.string(), fc.integer(), fc.boolean()),
+              users: userArrayArbitrary,
+              mode: modeArbitrary,
+              source: sourceArbitrary,
+              updatedAt: iso8601Arbitrary
+            }),
+            // Invalid users (not an array)
+            fc.record({
+              channels: channelArrayArbitrary,
+              users: fc.oneof(fc.string(), fc.integer(), fc.boolean()),
+              mode: modeArbitrary,
+              source: sourceArbitrary,
+              updatedAt: iso8601Arbitrary
+            }),
+            // Invalid mode
+            fc.record({
+              channels: channelArrayArbitrary,
+              users: userArrayArbitrary,
+              mode: fc.string().filter(s => s !== 'active' && s !== 'idle'),
+              source: sourceArbitrary,
+              updatedAt: iso8601Arbitrary
+            }),
+            // Invalid source
+            fc.record({
+              channels: channelArrayArbitrary,
+              users: userArrayArbitrary,
+              mode: modeArbitrary,
+              source: fc.string().filter(s => s !== 'config' && s !== 'runtime'),
+              updatedAt: iso8601Arbitrary
+            }),
+            // Invalid updatedAt (not a string or not ISO 8601)
+            fc.record({
+              channels: channelArrayArbitrary,
+              users: userArrayArbitrary,
+              mode: modeArbitrary,
+              source: sourceArbitrary,
+              updatedAt: fc.oneof(fc.integer(), fc.boolean(), fc.string().filter(s => isNaN(Date.parse(s))))
+            })
+          ),
+          (invalidState: any) => {
+            // Check that at least one field has an invalid type
+            const channelsValid = Array.isArray(invalidState.channels);
+            const usersValid = Array.isArray(invalidState.users);
+            const modeValid = invalidState.mode === 'active' || invalidState.mode === 'idle';
+            const sourceValid = invalidState.source === 'config' || invalidState.source === 'runtime';
+            const updatedAtValid = typeof invalidState.updatedAt === 'string' && !isNaN(Date.parse(invalidState.updatedAt));
+
+            // At least one field should be invalid
+            return !(channelsValid && usersValid && modeValid && sourceValid && updatedAtValid);
           }
         ),
         { numRuns: 100 }

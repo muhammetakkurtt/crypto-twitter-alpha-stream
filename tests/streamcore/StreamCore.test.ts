@@ -1369,3 +1369,439 @@ describe('StreamCore Integration Tests', () => {
     });
   });
 
+
+  describe('Runtime Subscription Management', () => {
+    it('should return correct runtime subscription state', () => {
+      const filterPipeline = new FilterPipeline();
+      const dedupCache = new DedupCache();
+      const eventBus = new EventBus();
+
+      const streamCore = new StreamCore(
+        {
+          baseUrl: 'http://localhost:3000',
+          token: 'test-token',
+          channels: ['tweets', 'following'],
+          userFilters: ['elonmusk', 'vitalikbuterin']
+        },
+        filterPipeline,
+        dedupCache,
+        eventBus
+      );
+
+      const state = streamCore.getRuntimeSubscriptionState();
+      
+      expect(state.channels).toEqual(['tweets', 'following']);
+      expect(state.users).toEqual(['elonmusk', 'vitalikbuterin']);
+      expect(state.mode).toBe('active');
+      expect(state.source).toBe('config');
+      expect(state.updatedAt).toBeDefined();
+      expect(new Date(state.updatedAt).getTime()).toBeLessThanOrEqual(Date.now());
+
+      streamCore.stop();
+      dedupCache.clear();
+    });
+
+    it('should initialize with idle mode when channels array is empty', () => {
+      const filterPipeline = new FilterPipeline();
+      const dedupCache = new DedupCache();
+      const eventBus = new EventBus();
+
+      const streamCore = new StreamCore(
+        {
+          baseUrl: 'http://localhost:3000',
+          token: 'test-token',
+          channels: []
+        },
+        filterPipeline,
+        dedupCache,
+        eventBus
+      );
+
+      const state = streamCore.getRuntimeSubscriptionState();
+      
+      expect(state.channels).toEqual([]);
+      expect(state.mode).toBe('idle');
+      expect(state.source).toBe('config');
+
+      streamCore.stop();
+      dedupCache.clear();
+    });
+
+    it('should initialize with config source', () => {
+      const filterPipeline = new FilterPipeline();
+      const dedupCache = new DedupCache();
+      const eventBus = new EventBus();
+
+      const streamCore = new StreamCore(
+        {
+          baseUrl: 'http://localhost:3000',
+          token: 'test-token',
+          channels: ['all']
+        },
+        filterPipeline,
+        dedupCache,
+        eventBus
+      );
+
+      const state = streamCore.getRuntimeSubscriptionState();
+      expect(state.source).toBe('config');
+
+      streamCore.stop();
+      dedupCache.clear();
+    });
+
+    it('should reject updateRuntimeSubscription with invalid channels', async () => {
+      const filterPipeline = new FilterPipeline();
+      const dedupCache = new DedupCache();
+      const eventBus = new EventBus();
+
+      const streamCore = new StreamCore(
+        {
+          baseUrl: 'http://localhost:3000',
+          token: 'test-token',
+          channels: ['all']
+        },
+        filterPipeline,
+        dedupCache,
+        eventBus
+      );
+
+      // Mock wssClient to simulate connected state
+      const mockWssClient = {
+        getConnectionState: jest.fn().mockReturnValue('connected'),
+        updateSubscription: jest.fn(),
+        disconnect: jest.fn()
+      };
+      (streamCore as any).wssClient = mockWssClient;
+
+      await expect(
+        streamCore.updateRuntimeSubscription({
+          channels: ['invalid' as any],
+          users: []
+        })
+      ).rejects.toThrow('Invalid channel: invalid');
+
+      streamCore.stop();
+      dedupCache.clear();
+    });
+
+    it('should reject updateRuntimeSubscription with invalid users (non-array)', async () => {
+      const filterPipeline = new FilterPipeline();
+      const dedupCache = new DedupCache();
+      const eventBus = new EventBus();
+
+      const streamCore = new StreamCore(
+        {
+          baseUrl: 'http://localhost:3000',
+          token: 'test-token',
+          channels: ['all']
+        },
+        filterPipeline,
+        dedupCache,
+        eventBus
+      );
+
+      // Mock wssClient to simulate connected state
+      const mockWssClient = {
+        getConnectionState: jest.fn().mockReturnValue('connected'),
+        updateSubscription: jest.fn(),
+        disconnect: jest.fn()
+      };
+      (streamCore as any).wssClient = mockWssClient;
+
+      await expect(
+        streamCore.updateRuntimeSubscription({
+          channels: ['all'],
+          users: 'not-an-array' as any
+        })
+      ).rejects.toThrow('Users must be an array');
+
+      streamCore.stop();
+      dedupCache.clear();
+    });
+
+    it('should reject updateRuntimeSubscription during disconnection', async () => {
+      const filterPipeline = new FilterPipeline();
+      const dedupCache = new DedupCache();
+      const eventBus = new EventBus();
+
+      const streamCore = new StreamCore(
+        {
+          baseUrl: 'http://localhost:3000',
+          token: 'test-token',
+          channels: ['all']
+        },
+        filterPipeline,
+        dedupCache,
+        eventBus
+      );
+
+      // Mock wssClient to simulate disconnected state
+      const mockWssClient = {
+        getConnectionState: jest.fn().mockReturnValue('disconnected'),
+        updateSubscription: jest.fn(),
+        disconnect: jest.fn()
+      };
+      (streamCore as any).wssClient = mockWssClient;
+
+      await expect(
+        streamCore.updateRuntimeSubscription({
+          channels: ['tweets'],
+          users: []
+        })
+      ).rejects.toThrow('Cannot update subscription: connection state is disconnected');
+
+      streamCore.stop();
+      dedupCache.clear();
+    });
+
+    it('should reject concurrent update requests', async () => {
+      const filterPipeline = new FilterPipeline();
+      const dedupCache = new DedupCache();
+      const eventBus = new EventBus();
+
+      const streamCore = new StreamCore(
+        {
+          baseUrl: 'http://localhost:3000',
+          token: 'test-token',
+          channels: ['all']
+        },
+        filterPipeline,
+        dedupCache,
+        eventBus
+      );
+
+      // Mock wssClient to simulate connected state with slow update
+      const mockWssClient = {
+        getConnectionState: jest.fn().mockReturnValue('connected'),
+        updateSubscription: jest.fn().mockImplementation(() => 
+          new Promise(resolve => setTimeout(resolve, 100))
+        ),
+        disconnect: jest.fn()
+      };
+      (streamCore as any).wssClient = mockWssClient;
+
+      // Start first update
+      const firstUpdate = streamCore.updateRuntimeSubscription({
+        channels: ['tweets'],
+        users: []
+      });
+
+      // Try second update immediately (should be rejected)
+      await expect(
+        streamCore.updateRuntimeSubscription({
+          channels: ['following'],
+          users: []
+        })
+      ).rejects.toThrow('Another subscription update is already in progress');
+
+      // Wait for first update to complete
+      await firstUpdate;
+
+      streamCore.stop();
+      dedupCache.clear();
+    });
+
+    it('should transition to idle mode with empty channels', async () => {
+      const filterPipeline = new FilterPipeline();
+      const dedupCache = new DedupCache();
+      const eventBus = new EventBus();
+
+      const streamCore = new StreamCore(
+        {
+          baseUrl: 'http://localhost:3000',
+          token: 'test-token',
+          channels: ['all']
+        },
+        filterPipeline,
+        dedupCache,
+        eventBus
+      );
+
+      // Mock wssClient
+      const mockWssClient = {
+        getConnectionState: jest.fn().mockReturnValue('connected'),
+        updateSubscription: jest.fn().mockResolvedValue(undefined),
+        disconnect: jest.fn()
+      };
+      (streamCore as any).wssClient = mockWssClient;
+
+      const newState = await streamCore.updateRuntimeSubscription({
+        channels: [],
+        users: []
+      });
+
+      expect(newState.channels).toEqual([]);
+      expect(newState.mode).toBe('idle');
+      expect(newState.source).toBe('runtime');
+
+      streamCore.stop();
+      dedupCache.clear();
+    });
+
+    it('should update to runtime source after modification', async () => {
+      const filterPipeline = new FilterPipeline();
+      const dedupCache = new DedupCache();
+      const eventBus = new EventBus();
+
+      const streamCore = new StreamCore(
+        {
+          baseUrl: 'http://localhost:3000',
+          token: 'test-token',
+          channels: ['all']
+        },
+        filterPipeline,
+        dedupCache,
+        eventBus
+      );
+
+      // Initial state should be config
+      const initialState = streamCore.getRuntimeSubscriptionState();
+      expect(initialState.source).toBe('config');
+
+      // Mock wssClient
+      const mockWssClient = {
+        getConnectionState: jest.fn().mockReturnValue('connected'),
+        updateSubscription: jest.fn().mockResolvedValue(undefined),
+        disconnect: jest.fn()
+      };
+      (streamCore as any).wssClient = mockWssClient;
+
+      const newState = await streamCore.updateRuntimeSubscription({
+        channels: ['tweets'],
+        users: []
+      });
+
+      expect(newState.source).toBe('runtime');
+
+      streamCore.stop();
+      dedupCache.clear();
+    });
+
+    it('should update runtime subscription with valid payload', async () => {
+      const filterPipeline = new FilterPipeline();
+      const dedupCache = new DedupCache();
+      const eventBus = new EventBus();
+
+      const streamCore = new StreamCore(
+        {
+          baseUrl: 'http://localhost:3000',
+          token: 'test-token',
+          channels: ['all']
+        },
+        filterPipeline,
+        dedupCache,
+        eventBus
+      );
+
+      // Mock wssClient
+      const mockWssClient = {
+        getConnectionState: jest.fn().mockReturnValue('connected'),
+        updateSubscription: jest.fn().mockResolvedValue(undefined),
+        disconnect: jest.fn()
+      };
+      (streamCore as any).wssClient = mockWssClient;
+
+      const newState = await streamCore.updateRuntimeSubscription({
+        channels: ['tweets', 'following'],
+        users: ['elonmusk', 'vitalikbuterin']
+      });
+
+      expect(newState.channels).toEqual(['following', 'tweets']); // Sorted
+      expect(newState.users).toEqual(['elonmusk', 'vitalikbuterin']); // Normalized
+      expect(newState.mode).toBe('active');
+      expect(newState.source).toBe('runtime');
+      expect(mockWssClient.updateSubscription).toHaveBeenCalledWith(
+        ['following', 'tweets'],
+        ['elonmusk', 'vitalikbuterin'],
+        10000
+      );
+
+      streamCore.stop();
+      dedupCache.clear();
+    });
+
+    it('should normalize ["all", "tweets"] to ["all"]', async () => {
+      const filterPipeline = new FilterPipeline();
+      const dedupCache = new DedupCache();
+      const eventBus = new EventBus();
+
+      const streamCore = new StreamCore(
+        {
+          baseUrl: 'http://localhost:3000',
+          token: 'test-token',
+          channels: ['tweets']
+        },
+        filterPipeline,
+        dedupCache,
+        eventBus
+      );
+
+      // Mock wssClient
+      const mockWssClient = {
+        getConnectionState: jest.fn().mockReturnValue('connected'),
+        updateSubscription: jest.fn().mockResolvedValue(undefined),
+        disconnect: jest.fn()
+      };
+      (streamCore as any).wssClient = mockWssClient;
+
+      const newState = await streamCore.updateRuntimeSubscription({
+        channels: ['all', 'tweets'],
+        users: []
+      });
+
+      // Should normalize to ["all"] only, matching ConfigManager behavior
+      expect(newState.channels).toEqual(['all']);
+      expect(newState.mode).toBe('active');
+      expect(mockWssClient.updateSubscription).toHaveBeenCalledWith(
+        ['all'],
+        undefined,
+        10000
+      );
+
+      streamCore.stop();
+      dedupCache.clear();
+    });
+
+    it('should normalize ["tweets", "all", "following"] to ["all"]', async () => {
+      const filterPipeline = new FilterPipeline();
+      const dedupCache = new DedupCache();
+      const eventBus = new EventBus();
+
+      const streamCore = new StreamCore(
+        {
+          baseUrl: 'http://localhost:3000',
+          token: 'test-token',
+          channels: ['tweets']
+        },
+        filterPipeline,
+        dedupCache,
+        eventBus
+      );
+
+      // Mock wssClient
+      const mockWssClient = {
+        getConnectionState: jest.fn().mockReturnValue('connected'),
+        updateSubscription: jest.fn().mockResolvedValue(undefined),
+        disconnect: jest.fn()
+      };
+      (streamCore as any).wssClient = mockWssClient;
+
+      const newState = await streamCore.updateRuntimeSubscription({
+        channels: ['tweets', 'all', 'following'],
+        users: []
+      });
+
+      // Should normalize to ["all"] only, matching ConfigManager behavior
+      expect(newState.channels).toEqual(['all']);
+      expect(newState.mode).toBe('active');
+      expect(mockWssClient.updateSubscription).toHaveBeenCalledWith(
+        ['all'],
+        undefined,
+        10000
+      );
+
+      streamCore.stop();
+      dedupCache.clear();
+    });
+  });

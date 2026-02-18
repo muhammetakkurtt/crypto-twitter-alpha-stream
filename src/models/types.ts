@@ -2,6 +2,30 @@
  * Data models and type definitions for the Crypto Twitter Alpha Stream
  */
 
+// Channel type for WebSocket subscriptions
+export type Channel = 'all' | 'tweets' | 'following' | 'profile';
+
+// Runtime subscription mode
+export type RuntimeSubscriptionMode = 'active' | 'idle';
+
+// Runtime subscription source
+export type RuntimeSubscriptionSource = 'config' | 'runtime';
+
+// Runtime subscription state
+export interface RuntimeSubscriptionState {
+  channels: Channel[];
+  users: string[];
+  mode: RuntimeSubscriptionMode;
+  source: RuntimeSubscriptionSource;
+  updatedAt: string; // ISO 8601 timestamp
+}
+
+// Payload for updating runtime subscription
+export interface UpdateRuntimeSubscriptionPayload {
+  channels: Channel[];
+  users: string[];
+}
+
 // Event Types - matching actor event types directly
 export type EventType = 
   | 'post_created' 

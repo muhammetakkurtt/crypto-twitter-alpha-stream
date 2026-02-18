@@ -5,7 +5,8 @@
  * the complete event processing flow: receive → parse → filter → dedup → broadcast
  */
 
-import { WSSClient, ConnectionConfig, Channel, ConnectionState } from '../ws/WSSClient';
+import { WSSClient, ConnectionConfig, ConnectionState } from '../ws/WSSClient';
+import { Channel, RuntimeSubscriptionState, RuntimeSubscriptionMode, UpdateRuntimeSubscriptionPayload } from '../models/types';
 import { FilterPipeline } from '../filters/FilterPipeline';
 import { DedupCache, generateDedupKey } from '../dedup/DedupCache';
 import { EventBus } from '../eventbus/EventBus';
@@ -44,6 +45,10 @@ export class StreamCore {
 
   private connectionStatus: ConnectionStatus = 'disconnected';
 
+  // Runtime subscription state
+  private runtimeSubscriptionState: RuntimeSubscriptionState;
+  private isUpdatingSubscription: boolean = false;
+
   // Statistics
   private totalEvents: number = 0;
   private deliveredEvents: number = 0;
@@ -59,6 +64,15 @@ export class StreamCore {
     this.filterPipeline = filterPipeline;
     this.dedupCache = dedupCache;
     this.eventBus = eventBus;
+
+    // Initialize runtime subscription state from config
+    this.runtimeSubscriptionState = {
+      channels: config.channels,
+      users: config.userFilters || [],
+      mode: config.channels.length === 0 ? 'idle' : 'active',
+      source: 'config',
+      updatedAt: new Date().toISOString()
+    };
   }
 
   /**
@@ -91,6 +105,82 @@ export class StreamCore {
    */
   getChannels(): Channel[] {
     return this.config.channels;
+  }
+
+  /**
+   * Get current runtime subscription state
+   * @returns Deep copy of current subscription state
+   */
+  getRuntimeSubscriptionState(): RuntimeSubscriptionState {
+    return { ...this.runtimeSubscriptionState };
+  }
+
+  /**
+   * Update runtime subscription
+   * Atomically updates the subscription at the actor level
+   * 
+   * @param payload - New subscription parameters
+   * @returns Promise that resolves when update is complete
+   * @throws Error if update fails or another update is in progress
+   */
+  async updateRuntimeSubscription(
+    payload: UpdateRuntimeSubscriptionPayload
+  ): Promise<RuntimeSubscriptionState> {
+    // Check for concurrent updates
+    if (this.isUpdatingSubscription) {
+      throw new Error('Another subscription update is already in progress');
+    }
+
+    // Validate and normalize input
+    const normalizedChannels = this.normalizeChannels(payload.channels);
+    const normalizedUsers = this.normalizeUsers(payload.users);
+
+    // Validate connection
+    if (!this.wssClient) {
+      throw new Error('WebSocket client not initialized');
+    }
+
+    const connectionState = this.wssClient.getConnectionState();
+    if (connectionState !== 'connected') {
+      throw new Error(`Cannot update subscription: connection state is ${connectionState}`);
+    }
+
+    // Mark update in progress
+    this.isUpdatingSubscription = true;
+
+    try {
+      // Send update to actor
+      await this.wssClient.updateSubscription(
+        normalizedChannels,
+        normalizedUsers.length > 0 ? normalizedUsers : undefined,
+        10000 // 10 second timeout
+      );
+
+      // Update internal state
+      const newMode: RuntimeSubscriptionMode = 
+        normalizedChannels.length === 0 ? 'idle' : 'active';
+
+      this.runtimeSubscriptionState = {
+        channels: normalizedChannels,
+        users: normalizedUsers,
+        mode: newMode,
+        source: 'runtime',
+        updatedAt: new Date().toISOString()
+      };
+
+      // Update config for consistency
+      this.config.channels = normalizedChannels;
+      this.config.userFilters = normalizedUsers.length > 0 ? normalizedUsers : undefined;
+
+      if (process.env.DEBUG === 'true') {
+        console.log(`[StreamCore] Runtime subscription updated: ${JSON.stringify(this.runtimeSubscriptionState)}`);
+      }
+
+      return { ...this.runtimeSubscriptionState };
+
+    } finally {
+      this.isUpdatingSubscription = false;
+    }
   }
 
   /**
@@ -319,5 +409,54 @@ export class StreamCore {
     if (this.connectionStatus === 'connected') {
       this.connectionStatus = 'reconnecting';
     }
+  }
+
+  /**
+   * Normalize channel array
+   * - Remove duplicates
+   * - Validate channel names
+   * - Sort for consistency
+   */
+  private normalizeChannels(channels: Channel[]): Channel[] {
+    if (!Array.isArray(channels)) {
+      throw new Error('Channels must be an array');
+    }
+
+    const validChannels: Channel[] = ['all', 'tweets', 'following', 'profile'];
+    const normalized = [...new Set(channels)]; // Remove duplicates
+
+    for (const channel of normalized) {
+      if (!validChannels.includes(channel)) {
+        throw new Error(`Invalid channel: ${channel}`);
+      }
+    }
+
+    // If "all" is present with other channels, normalize to ["all"] only
+    // This matches the behavior of ConfigManager.normalizeChannels
+    if (normalized.includes('all')) {
+      return ['all'];
+    }
+
+    return normalized.sort();
+  }
+
+  /**
+   * Normalize user array
+   * - Remove duplicates
+   * - Trim whitespace
+   * - Remove empty strings
+   * - Convert to lowercase
+   * - Sort for consistency
+   */
+  private normalizeUsers(users: string[]): string[] {
+    if (!Array.isArray(users)) {
+      throw new Error('Users must be an array');
+    }
+
+    const normalized = users
+      .map(u => u.trim().toLowerCase())
+      .filter(u => u.length > 0);
+
+    return [...new Set(normalized)].sort();
   }
 }

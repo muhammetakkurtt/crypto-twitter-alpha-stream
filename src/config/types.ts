@@ -2,7 +2,10 @@
  * Configuration type definitions
  */
 
-export type Channel = 'all' | 'tweets' | 'following' | 'profile';
+import { Channel } from '../models/types';
+
+// Re-export Channel for backward compatibility
+export { Channel };
 
 export interface ApifyConfig {
   token: string;
